@@ -1,4 +1,4 @@
-import { put } from "@vercel/blob"
+import { put, del } from "@vercel/blob"
 
 export async function uploadFileToBlob(file: File): Promise<{ url: string; pathname: string }> {
   try {
@@ -10,6 +10,18 @@ export async function uploadFileToBlob(file: File): Promise<{ url: string; pathn
     return { url, pathname }
   } catch (error) {
     console.error("❌ Failed to upload to Vercel Blob:", error)
+    throw error
+  }
+}
+
+export async function deleteFileFromBlob(url: string): Promise<boolean> {
+  try {
+    console.log(`Deleting file from Vercel Blob: ${url}`)
+    await del(url)
+    console.log(`✅ File deleted from Vercel Blob: ${url}`)
+    return true
+  } catch (error) {
+    console.error("❌ Failed to delete from Vercel Blob:", error)
     throw error
   }
 }

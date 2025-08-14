@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Users, FileText, TrendingUp, MapPin, Briefcase, Calendar, Download, RefreshCw, Eye } from "lucide-react"
+import { Users, FileText, TrendingUp, MapPin, Briefcase, Calendar, Download, RefreshCw, Eye, Database, Trash2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { CandidatePreviewDialog } from "./candidate-preview-dialog"
@@ -117,25 +117,96 @@ export function AdminPanel() {
     }
   }
 
-  const exportData = async (type: "candidates" | "analytics") => {
+  const exportData = async (type: string) => {
     try {
       const response = await fetch(`/api/admin/export?type=${type}`)
-      const blob = await response.blob()
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement("a")
-      link.href = url
-      link.download = `${type}-export-${Date.now()}.csv`
-      link.click()
-      URL.revokeObjectURL(url)
-      toast({
-        title: "Success",
-        description: `${type} data exported successfully`,
-      })
+      if (response.ok) {
+        const blob = await response.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = `${type}_export_${new Date().toISOString().split("T")[0]}.csv`
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(url)
+        document.body.removeChild(a)
+        
+        toast({
+          title: "Export Successful",
+          description: `${type} data has been exported successfully.`,
+        })
+      } else {
+        throw new Error("Export failed")
+      }
     } catch (error) {
-      console.error("Export failed:", error)
+      console.error("Export error:", error)
       toast({
-        title: "Error",
-        description: "Export failed. Please try again.",
+        title: "Export Failed",
+        description: "Failed to export data. Please try again.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  const realignAllData = async () => {
+    try {
+      const response = await fetch("/api/admin/realign-all-data", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer admin-token", // You can make this more secure
+          "Content-Type": "application/json"
+        }
+      })
+      
+      if (response.ok) {
+        const result = await response.json()
+        toast({
+          title: "Data Realignment Successful",
+          description: "All candidate data has been realigned to proper columns.",
+        })
+        
+        // Refresh stats to show updated data
+        fetchStats()
+      } else {
+        throw new Error("Realignment failed")
+      }
+    } catch (error) {
+      console.error("Realignment error:", error)
+      toast({
+        title: "Data Realignment Failed",
+        description: "Failed to realign data. Please try again.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  const restoreMissingProfiles = async () => {
+    try {
+      const response = await fetch("/api/admin/restore-profiles", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer admin-token", // You can make this more secure
+          "Content-Type": "application/json"
+        }
+      })
+      
+      if (response.ok) {
+        const result = await response.json()
+        toast({
+          title: "Profile Restoration Successful",
+          description: `${result.result.restored} profiles were restored.`,
+        })
+        
+        // Refresh stats to show updated data
+        fetchStats()
+      } else {
+        throw new Error("Profile restoration failed")
+      }
+    } catch (error) {
+      console.error("Profile restoration error:", error)
+      toast({
+        title: "Profile Restoration Failed",
+        description: "Failed to restore profiles. Please try again.",
         variant: "destructive",
       })
     }
@@ -372,6 +443,14 @@ export function AdminPanel() {
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh
           </Button>
+          <Button variant="outline" onClick={realignAllData}>
+            <Database className="h-4 w-4 mr-2" />
+            Realign Data
+          </Button>
+          <Button variant="outline" onClick={restoreMissingProfiles}>
+            <Users className="h-4 w-4 mr-2" />
+            Restore Profiles
+          </Button>
         </div>
       </div>
 
@@ -486,12 +565,12 @@ export function AdminPanel() {
         </CardContent>
       </Card>
 
-      {/* Recent Uploads with Enhanced Preview */}
+      {/* Recent Uploads */}
       <Card>
         <CardHeader>
-          <div className="flex justify-between items-center">
+          <div className="flex items-center justify-between">
             <CardTitle>Recent Uploads</CardTitle>
-            <div className="flex gap-2">
+            <div className="flex items-center space-x-2">
               <Button variant="outline" size="sm" onClick={() => exportData("candidates")}>
                 <Download className="h-4 w-4 mr-2" />
                 Export Candidates
@@ -499,6 +578,14 @@ export function AdminPanel() {
               <Button variant="outline" size="sm" onClick={() => exportData("analytics")}>
                 <Download className="h-4 w-4 mr-2" />
                 Export Analytics
+              </Button>
+              <Button variant="outline" size="sm" onClick={realignAllData}>
+                <Database className="h-4 w-4 mr-2" />
+                Fix Alignment
+              </Button>
+              <Button variant="outline" size="sm" onClick={restoreMissingProfiles}>
+                <Users className="h-4 w-4 mr-2" />
+                Restore Profiles
               </Button>
             </div>
           </div>
@@ -551,32 +638,6 @@ export function AdminPanel() {
               ))}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
-
-      {/* AI Training Section */}
-      <Card className="bg-gradient-to-r from-purple-50 to-pink-50 border-purple-200">
-        <CardHeader>
-          <CardTitle className="text-purple-900">AI Training & Improvement</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            <p className="text-purple-800">Enhance AI performance by providing feedback on hiring decisions.</p>
-            <div className="flex gap-4">
-              <Button variant="outline" className="border-purple-300 text-purple-700 bg-transparent">
-                Upload Training Data
-              </Button>
-              <Button variant="outline" className="border-purple-300 text-purple-700 bg-transparent">
-                Export for Fine-tuning
-              </Button>
-              <Button variant="outline" className="border-purple-300 text-purple-700 bg-transparent">
-                View Training History
-              </Button>
-            </div>
-            <p className="text-sm text-purple-600">
-              Feature coming soon: Automated model retraining based on hiring outcomes.
-            </p>
-          </div>
         </CardContent>
       </Card>
 

@@ -98,6 +98,8 @@ export async function POST(request: NextRequest) {
       jobTitles: parsedData.jobTitles || [],
       workDuration: parsedData.workDuration || [],
       keyAchievements: parsedData.keyAchievements || [],
+      workExperience: parsedData.workExperience || [],
+      education: parsedData.education || [],
 
       // Additional Information
       projects: parsedData.projects || [],

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { put } from "@vercel/blob"
 import { GoogleGenerativeAI } from "@google/generative-ai"
 import { generateEmbedding } from "@/lib/ai-utils"
+import { realignSpreadsheetData, cleanupSpreadsheetData } from "@/lib/google-sheets"
 
 export async function GET() {
   const results = {
@@ -76,6 +77,37 @@ export async function GET() {
     results.embedding = `✅ Working (Dimension: ${embedding.length})`
   } catch (error) {
     results.embedding = `❌ Failed: ${error instanceof Error ? error.message : "Unknown error"}`
+  }
+
+  try {
+    console.log("=== Testing Data Realignment Functions ===")
+    
+    // Test the realignment function
+    console.log("Testing realignSpreadsheetData...")
+    const realignResult = await realignSpreadsheetData()
+    console.log("Realignment result:", realignResult)
+    
+    // Test the cleanup function
+    console.log("Testing cleanupSpreadsheetData...")
+    const cleanupResult = await cleanupSpreadsheetData()
+    console.log("Cleanup result:", cleanupResult)
+    
+    return NextResponse.json({
+      success: true,
+      message: "Data realignment functions tested successfully",
+      realignResult,
+      cleanupResult
+    })
+    
+  } catch (error) {
+    console.error("❌ Test failed:", error)
+    return NextResponse.json(
+      { 
+        error: "Test failed", 
+        details: error instanceof Error ? error.message : "Unknown error" 
+      },
+      { status: 500 }
+    )
   }
 
   return NextResponse.json(results)

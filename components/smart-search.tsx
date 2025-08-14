@@ -169,7 +169,7 @@ export function SmartSearch() {
 
     // Apply all sidebar filters
     if (sidebarFilters.hideInactive) {
-      filtered = filtered.filter((candidate) => candidate.status !== "inactive")
+      filtered = filtered.filter((candidate) => candidate.status !== "rejected")
     }
 
     if (sidebarFilters.showOnlyAvailable) {
@@ -193,7 +193,7 @@ export function SmartSearch() {
           .join(" ")
           .toLowerCase()
 
-        return sidebarFilters.mustHaveKeywords.every((keyword) => searchText.includes(keyword.toLowerCase()))
+        return sidebarFilters.mustHaveKeywords.every((keyword) => searchText.includes((keyword || "").toLowerCase()))
       })
     }
 
@@ -209,7 +209,7 @@ export function SmartSearch() {
           .join(" ")
           .toLowerCase()
 
-        return !sidebarFilters.excludeKeywords.some((keyword) => searchText.includes(keyword.toLowerCase()))
+        return !sidebarFilters.excludeKeywords.some((keyword) => searchText.includes((keyword || "").toLowerCase()))
       })
     }
 
@@ -1110,7 +1110,7 @@ export function SmartSearch() {
                       <Button onClick={handleManualSearch} disabled={isSearching} size="lg">
                         {isSearching ? (
                           <>
-                            <Search className="h-4 w-4 mr-2 animate-spin" />
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
                             Searching...
                           </>
                         ) : (
@@ -1155,7 +1155,7 @@ export function SmartSearch() {
                         <Button onClick={handleSmartSearch} disabled={isSearching} size="lg" className="px-8">
                           {isSearching ? (
                             <>
-                              <Sparkles className="h-5 w-5 mr-2 animate-spin" />
+                              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
                               Searching...
                             </>
                           ) : (
@@ -1209,7 +1209,7 @@ export function SmartSearch() {
                         <Button onClick={handleJDSearch} disabled={isSearching} size="lg">
                           {isSearching ? (
                             <>
-                              <FileText className="h-4 w-4 mr-2 animate-spin" />
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
                               Analyzing JD...
                             </>
                           ) : (
@@ -1268,12 +1268,21 @@ export function SmartSearch() {
               <div>
                 <h3 className="text-xl font-semibold flex items-center">
                   <Search className="h-5 w-5 mr-2" />
-                  {filteredResults.length} profiles found
-                  {searchMode === "smart" && smartSearchQuery && ` for "${smartSearchQuery}"`}
-                  {searchMode === "jd" && " for Job Description Analysis"}
-                  {searchMode === "manual" &&
-                    manualFilters.keywords.length > 0 &&
-                    ` for "${manualFilters.keywords.join(", ")}"`}
+                  {isSearching ? (
+                    <>
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mr-2"></div>
+                      Searching...
+                    </>
+                  ) : (
+                    <>
+                      {filteredResults.length} profiles found
+                      {searchMode === "smart" && smartSearchQuery && ` for "${smartSearchQuery}"`}
+                      {searchMode === "jd" && " for Job Description Analysis"}
+                      {searchMode === "manual" &&
+                        manualFilters.keywords.length > 0 &&
+                        ` for "${manualFilters.keywords.join(", ")}"`}
+                    </>
+                  )}
                 </h3>
                 {filteredResults.length !== searchResults.length && (
                   <p className="text-sm text-gray-600 mt-1">
@@ -1303,7 +1312,23 @@ export function SmartSearch() {
               </div>
             </div>
 
-            {filteredResults.length === 0 && !isSearching ? (
+            {isSearching ? (
+              <Card>
+                <CardContent className="p-12 text-center">
+                  <div className="flex flex-col items-center space-y-4">
+                    <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600"></div>
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 mb-2">Searching for candidates...</h3>
+                      <p className="text-gray-600">
+                        {searchMode === "smart" && "Using AI to find the best matches"}
+                        {searchMode === "jd" && "Analyzing job description and finding matches"}
+                        {searchMode === "manual" && "Searching with your criteria"}
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : filteredResults.length === 0 ? (
               <Card>
                 <CardContent className="p-12 text-center">
                   <Search className="h-16 w-16 text-gray-300 mx-auto mb-4" />
@@ -1314,9 +1339,9 @@ export function SmartSearch() {
               </Card>
             ) : (
               <div className="grid gap-6">
-                {sortedResults.map((result) => (
+                {sortedResults.map((result, index) => (
                   <Card
-                    key={result._id || result.id}
+                    key={`${result._id || result.id}-${index}`}
                     className="hover:shadow-lg transition-all duration-300 border-l-4 border-l-blue-500"
                   >
                     <CardContent className="p-6">
@@ -1406,9 +1431,9 @@ export function SmartSearch() {
                             Technical Skills:
                           </h4>
                           <div className="flex flex-wrap gap-1">
-                            {(result.technicalSkills || []).slice(0, 8).map((skill, index) => (
+                            {(result.technicalSkills || []).slice(0, 8).map((skill, skillIndex) => (
                               <Badge
-                                key={index}
+                                key={`${result._id || result.id}-skill-${skillIndex}`}
                                 variant={
                                   (result.matchingKeywords || []).includes(skill.toLowerCase())
                                     ? "default"
@@ -1439,8 +1464,8 @@ export function SmartSearch() {
                               Languages:
                             </h4>
                             <div className="flex flex-wrap gap-1">
-                              {(result.languagesKnown || []).map((language, index) => (
-                                <Badge key={index} variant="outline" className="text-xs">
+                              {(result.languagesKnown || []).map((language, langIndex) => (
+                                <Badge key={`${result._id || result.id}-lang-${langIndex}`} variant="outline" className="text-xs">
                                   {language}
                                 </Badge>
                               ))}
@@ -1456,9 +1481,9 @@ export function SmartSearch() {
                               Matching Keywords:
                             </h4>
                             <div className="flex flex-wrap gap-1">
-                              {(result.matchingKeywords || []).map((keyword, index) => (
+                              {(result.matchingKeywords || []).map((keyword, keywordIndex) => (
                                 <Badge
-                                  key={index}
+                                  key={`${result._id || result.id}-keyword-${keywordIndex}`}
                                   variant="default"
                                   className="text-xs bg-green-100 text-green-700 border-green-200"
                                 >

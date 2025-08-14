@@ -49,6 +49,19 @@ export interface ComprehensiveCandidateData {
   jobTitles?: string[]
   workDuration?: string[]
   keyAchievements?: string[]
+  workExperience?: Array<{
+    company: string
+    role: string
+    duration: string
+    description: string
+  }>
+  education?: Array<{
+    degree: string
+    specialization: string
+    institution: string
+    year: string
+    percentage: string
+  }>
   // Additional Information
   projects?: string[]
   awards?: string[]
@@ -115,6 +128,8 @@ export async function initializeSpreadsheet() {
       "Job Titles",
       "Work Duration",
       "Key Achievements",
+      "Work Experience Details",
+      "Education Details",
       // Additional Information
       "Projects",
       "Awards",
@@ -238,7 +253,7 @@ export async function addCandidate(candidateData: Omit<ComprehensiveCandidateDat
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
-      range: "Sheet1!A:AZ",
+      range: "Sheet1!A:BB",
       valueInputOption: "RAW",
       requestBody: {
         values: [row],
@@ -258,7 +273,7 @@ export async function getAllCandidates(): Promise<ComprehensiveCandidateData[]> 
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: "Sheet1!A2:AZ", // Skip header row, include all columns
+      range: "Sheet1!A2:BB", // Skip header row, include all columns
     })
 
     if (!response.data.values) {
@@ -318,15 +333,15 @@ export async function getAllCandidates(): Promise<ComprehensiveCandidateData[]> 
         driveFileId: row[41] || "",
         driveFileUrl: row[42] || "",
         // System Fields
-        status: (row[43] as any) || "new",
-        tags: row[44] ? row[44].split(", ").filter(Boolean) : [],
-        rating: row[45] ? Number.parseInt(row[45]) : undefined,
-        notes: row[46] || "",
-        uploadedAt: row[47] || "",
-        updatedAt: row[48] || "",
-        lastContacted: row[49] || "",
-        interviewStatus: (row[50] as any) || "not-scheduled",
-        feedback: row[51] || "",
+        status: (row[45] as any) || "new",
+        tags: row[46] ? row[46].split(", ").filter(Boolean) : [],
+        rating: row[47] ? Number.parseInt(row[47]) : undefined,
+        notes: row[48] || "",
+        uploadedAt: row[49] || "",
+        updatedAt: row[50] || "",
+        lastContacted: row[51] || "",
+        interviewStatus: (row[52] as any) || "not-scheduled",
+        feedback: row[53] || "",
       }),
     )
   } catch (error) {
@@ -425,83 +440,142 @@ export async function updateCandidate(id: string, updates: Partial<Comprehensive
 
     console.log(`📝 Updating row number: ${rowNumber}`)
 
-    // Create the complete row data
-    const row = [
-      // Basic Information
-      updatedCandidate.id,
-      updatedCandidate.name,
-      updatedCandidate.email,
-      updatedCandidate.phone,
-      updatedCandidate.dateOfBirth || "",
-      updatedCandidate.gender || "",
-      updatedCandidate.maritalStatus || "",
-      // Professional Information
-      updatedCandidate.currentRole,
-      updatedCandidate.desiredRole || "",
-      updatedCandidate.currentCompany || "",
-      updatedCandidate.location,
-      updatedCandidate.preferredLocation || "",
-      updatedCandidate.totalExperience,
-      updatedCandidate.currentSalary || "",
-      updatedCandidate.expectedSalary || "",
-      updatedCandidate.noticePeriod || "",
-      // Education Details
-      updatedCandidate.highestQualification || "",
-      updatedCandidate.degree || "",
-      updatedCandidate.specialization || "",
-      updatedCandidate.university || "",
-      updatedCandidate.educationYear || "",
-      updatedCandidate.educationPercentage || "",
-      updatedCandidate.additionalQualifications || "",
-      // Skills & Expertise
-      updatedCandidate.technicalSkills.join(", "),
-      updatedCandidate.softSkills.join(", "),
-      updatedCandidate.languagesKnown?.join(", ") || "",
-      updatedCandidate.certifications?.join(", ") || "",
-      // Work Experience
-      updatedCandidate.previousCompanies?.join(", ") || "",
-      updatedCandidate.jobTitles?.join(", ") || "",
-      updatedCandidate.workDuration?.join(", ") || "",
-      updatedCandidate.keyAchievements?.join(", ") || "",
-      // Additional Information
-      updatedCandidate.projects?.join(", ") || "",
-      updatedCandidate.awards?.join(", ") || "",
-      updatedCandidate.publications?.join(", ") || "",
-      updatedCandidate.references?.join(", ") || "",
-      updatedCandidate.linkedinProfile || "",
-      updatedCandidate.portfolioUrl || "",
-      updatedCandidate.githubProfile || "",
-      updatedCandidate.summary || "",
-      // File Information
-      updatedCandidate.resumeText,
-      updatedCandidate.fileName,
-      updatedCandidate.driveFileId,
-      updatedCandidate.driveFileUrl,
-      // System Fields
-      updatedCandidate.status,
-      updatedCandidate.tags.join(", "),
-      updatedCandidate.rating || "",
-      updatedCandidate.notes || "",
-      updatedCandidate.uploadedAt,
-      updatedCandidate.updatedAt,
-      updatedCandidate.lastContacted || "",
-      updatedCandidate.interviewStatus || "not-scheduled",
-      updatedCandidate.feedback || "",
+    // First, let's ensure the headers are correct
+    const headerResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A1:BB1",
+    })
+
+    const currentHeaders = headerResponse.data.values?.[0] || []
+    console.log("Current headers:", currentHeaders)
+
+    // Define the expected column structure
+    const expectedColumns = [
+      "ID", "Name", "Email", "Phone", "Date of Birth", "Gender", "Marital Status",
+      "Current Role", "Desired Role", "Current Company", "Location", "Preferred Location",
+      "Total Experience", "Current Salary", "Expected Salary", "Notice Period",
+      "Highest Qualification", "Degree", "Specialization", "University/College",
+      "Education Year", "Education Percentage/CGPA", "Additional Qualifications",
+      "Technical Skills", "Soft Skills", "Languages Known", "Certifications",
+      "Previous Companies", "Job Titles", "Work Duration", "Key Achievements",
+      "Work Experience Details", "Education Details", "Projects", "Awards",
+      "Publications", "References", "LinkedIn Profile", "Portfolio URL",
+      "GitHub Profile", "Summary/Objective", "Resume Text", "File Name",
+      "Drive File ID", "Drive File URL", "Status", "Tags", "Rating",
+      "Notes", "Uploaded At", "Updated At", "Last Contacted", "Interview Status", "Feedback"
     ]
+
+    // Check if headers need to be updated
+    let headersNeedUpdate = false
+    if (currentHeaders.length !== expectedColumns.length) {
+      headersNeedUpdate = true
+    } else {
+      for (let i = 0; i < expectedColumns.length; i++) {
+        if (currentHeaders[i] !== expectedColumns[i]) {
+          headersNeedUpdate = true
+          break
+        }
+      }
+    }
+
+    if (headersNeedUpdate) {
+      console.log("Updating headers to match expected structure...")
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "Sheet1!A1:BB1",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [expectedColumns],
+        },
+      })
+      console.log("✅ Headers updated")
+    }
+
+    // Create the complete row data with proper column alignment
+    const row = new Array(expectedColumns.length).fill("")
+    
+    // Map data to correct columns based on expected structure
+    row[0] = updatedCandidate.id || generateId() // ID
+    row[1] = updatedCandidate.name || "Unknown Name" // Name
+    row[2] = updatedCandidate.email || "" // Email
+    row[3] = updatedCandidate.phone || "" // Phone
+    row[4] = updatedCandidate.dateOfBirth || "" // Date of Birth
+    row[5] = updatedCandidate.gender || "" // Gender
+    row[6] = updatedCandidate.maritalStatus || "" // Marital Status
+    row[7] = updatedCandidate.currentRole || "Not specified" // Current Role
+    row[8] = updatedCandidate.desiredRole || "" // Desired Role
+    row[9] = updatedCandidate.currentCompany || "" // Current Company
+    row[10] = updatedCandidate.location || "Not specified" // Location
+    row[11] = updatedCandidate.preferredLocation || "" // Preferred Location
+    row[12] = updatedCandidate.totalExperience || "Not specified" // Total Experience
+    row[13] = updatedCandidate.currentSalary || "" // Current Salary
+    row[14] = updatedCandidate.expectedSalary || "" // Expected Salary
+    row[15] = updatedCandidate.noticePeriod || "" // Notice Period
+    row[16] = updatedCandidate.highestQualification || "" // Highest Qualification
+    row[17] = updatedCandidate.degree || "" // Degree
+    row[18] = updatedCandidate.specialization || "" // Specialization
+    row[19] = updatedCandidate.university || "" // University/College
+    row[20] = updatedCandidate.educationYear || "" // Education Year
+    row[21] = updatedCandidate.educationPercentage || "" // Education Percentage/CGPA
+    row[22] = updatedCandidate.additionalQualifications || "" // Additional Qualifications
+    row[23] = Array.isArray(updatedCandidate.technicalSkills) ? updatedCandidate.technicalSkills.join(", ") : "" // Technical Skills
+    row[24] = Array.isArray(updatedCandidate.softSkills) ? updatedCandidate.softSkills.join(", ") : "" // Soft Skills
+    row[25] = Array.isArray(updatedCandidate.languagesKnown) ? updatedCandidate.languagesKnown.join(", ") : "" // Languages Known
+    row[26] = Array.isArray(updatedCandidate.certifications) ? updatedCandidate.certifications.join(", ") : "" // Certifications
+    row[27] = Array.isArray(updatedCandidate.previousCompanies) ? updatedCandidate.previousCompanies.join(", ") : "" // Previous Companies
+    row[28] = Array.isArray(updatedCandidate.jobTitles) ? updatedCandidate.jobTitles.join(", ") : "" // Job Titles
+    row[29] = Array.isArray(updatedCandidate.workDuration) ? updatedCandidate.workDuration.join(", ") : "" // Work Duration
+    row[30] = Array.isArray(updatedCandidate.keyAchievements) ? updatedCandidate.keyAchievements.join(", ") : "" // Key Achievements
+    row[31] = Array.isArray(updatedCandidate.workExperience) ? updatedCandidate.workExperience.map(exp => `${exp.role} at ${exp.company}`).join("; ") : "" // Work Experience Details
+    row[32] = Array.isArray(updatedCandidate.education) ? updatedCandidate.education.map(edu => `${edu.degree} from ${edu.institution}`).join("; ") : "" // Education Details
+    row[33] = Array.isArray(updatedCandidate.projects) ? updatedCandidate.projects.join(", ") : "" // Projects
+    row[34] = Array.isArray(updatedCandidate.awards) ? updatedCandidate.awards.join(", ") : "" // Awards
+    row[35] = Array.isArray(updatedCandidate.publications) ? updatedCandidate.publications.join(", ") : "" // Publications
+    row[36] = Array.isArray(updatedCandidate.references) ? updatedCandidate.references.join(", ") : "" // References
+    row[37] = updatedCandidate.linkedinProfile || "" // LinkedIn Profile
+    row[38] = updatedCandidate.portfolioUrl || "" // Portfolio URL
+    row[39] = updatedCandidate.githubProfile || "" // GitHub Profile
+    row[40] = updatedCandidate.summary || "" // Summary/Objective
+    row[41] = updatedCandidate.resumeText || "" // Resume Text
+    row[42] = updatedCandidate.fileName || "" // File Name
+    row[43] = updatedCandidate.driveFileId || "" // Drive File ID
+    row[44] = updatedCandidate.driveFileUrl || "" // Drive File URL
+    row[45] = updatedCandidate.status || "new" // Status
+    row[46] = Array.isArray(updatedCandidate.tags) ? updatedCandidate.tags.join(", ") : "" // Tags
+    row[47] = updatedCandidate.rating || "" // Rating
+    row[48] = updatedCandidate.notes || "" // Notes
+    row[49] = updatedCandidate.uploadedAt || new Date().toISOString() // Uploaded At
+    row[50] = updatedCandidate.updatedAt || new Date().toISOString() // Updated At
+    row[51] = updatedCandidate.lastContacted || "" // Last Contacted
+    row[52] = updatedCandidate.interviewStatus || "not-scheduled" // Interview Status
+    row[53] = updatedCandidate.feedback || "" // Feedback
+
+    console.log("Row data prepared with proper alignment:")
+    console.log("- Name (col 1):", row[1])
+    console.log("- Email (col 2):", row[2])
+    console.log("- Phone (col 3):", row[3])
+    console.log("- Current Role (col 7):", row[7])
+    console.log("- Current Company (col 9):", row[9])
+    console.log("- Location (col 10):", row[10])
+    console.log("- Total Experience (col 12):", row[12])
+    console.log("- Education (col 16):", row[16])
+    console.log("- Technical Skills (col 23):", row[23])
+    console.log("- Soft Skills (col 24):", row[24])
 
     // Update the specific row in Google Sheets
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
-      range: `Sheet1!A${rowNumber}:AZ${rowNumber}`,
+      range: `Sheet1!A${rowNumber}:BB${rowNumber}`,
       valueInputOption: "RAW",
       requestBody: {
         values: [row],
       },
     })
 
-    console.log(`✅ Candidate updated successfully: ${id}`)
+    console.log(`✅ Candidate ${id} updated successfully in row ${rowNumber}`)
+
   } catch (error) {
-    console.error("❌ Failed to update candidate:", error)
+    console.error(`❌ Failed to update candidate ${id}:`, error)
     throw error
   }
 }
@@ -647,6 +721,743 @@ export async function exportCandidatesToCSV(): Promise<string> {
     return csvContent
   } catch (error) {
     console.error("❌ Failed to export candidates:", error)
+    throw error
+  }
+}
+
+// Delete candidate from Google Sheets by ID
+export async function deleteCandidate(candidateId: string): Promise<boolean> {
+  try {
+    // First, find the row number for the candidate
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A:A", // Check ID column
+    })
+
+    if (!response.data.values) {
+      throw new Error("No data found in spreadsheet")
+    }
+
+    // Find the row index (1-based, but we need to account for header row)
+    let rowIndex = -1
+    for (let i = 1; i < response.data.values.length; i++) {
+      if (response.data.values[i][0] === candidateId) {
+        rowIndex = i + 1 // +1 because sheets are 1-indexed
+        break
+      }
+    }
+
+    if (rowIndex === -1) {
+      throw new Error(`Candidate with ID ${candidateId} not found`)
+    }
+
+    // Delete the row
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: {
+        requests: [
+          {
+            deleteDimension: {
+              range: {
+                sheetId: 0, // Assuming Sheet1 has ID 0
+                dimension: "ROWS",
+                startIndex: rowIndex - 1, // 0-indexed for the API
+                endIndex: rowIndex, // Delete one row
+              },
+            },
+          },
+        ],
+      },
+    })
+
+    console.log(`✅ Candidate ${candidateId} deleted from Google Sheets`)
+    return true
+  } catch (error) {
+    console.error("❌ Failed to delete candidate from Google Sheets:", error)
+    throw error
+  }
+}
+
+// Get candidate by ID
+export async function getCandidateById(candidateId: string): Promise<ComprehensiveCandidateData | null> {
+  try {
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A:BB", // Include all columns
+    })
+
+    if (!response.data.values) {
+      return null
+    }
+
+    // Find the candidate by ID (skip header row)
+    for (let i = 1; i < response.data.values.length; i++) {
+      const row = response.data.values[i]
+      if (row[0] === candidateId) {
+        return mapRowToCandidateData(row)
+      }
+    }
+
+    return null
+  } catch (error) {
+    console.error("❌ Failed to get candidate by ID:", error)
+    throw error
+  }
+}
+
+// Helper function to map row data to candidate data
+function mapRowToCandidateData(row: any[]): ComprehensiveCandidateData {
+  return {
+    id: row[0] || "",
+    name: row[1] || "",
+    email: row[2] || "",
+    phone: row[3] || "",
+    dateOfBirth: row[4] || "",
+    gender: row[5] || "",
+    maritalStatus: row[6] || "",
+    currentRole: row[7] || "",
+    desiredRole: row[8] || "",
+    currentCompany: row[9] || "",
+    location: row[10] || "",
+    preferredLocation: row[11] || "",
+    totalExperience: row[12] || "",
+    currentSalary: row[13] || "",
+    expectedSalary: row[14] || "",
+    noticePeriod: row[15] || "",
+    highestQualification: row[16] || "",
+    degree: row[17] || "",
+    specialization: row[18] || "",
+    university: row[19] || "",
+    educationYear: row[20] || "",
+    educationPercentage: row[21] || "",
+    additionalQualifications: row[22] || "",
+    technicalSkills: row[23] ? row[23].split(", ").filter(Boolean) : [],
+    softSkills: row[24] ? row[24].split(", ").filter(Boolean) : [],
+    languagesKnown: row[25] ? row[25].split(", ").filter(Boolean) : [],
+    certifications: row[26] ? row[26].split(", ").filter(Boolean) : [],
+    previousCompanies: row[27] ? row[27].split(", ").filter(Boolean) : [],
+    jobTitles: row[28] ? row[28].split(", ").filter(Boolean) : [],
+    workDuration: row[29] ? row[29].split(", ").filter(Boolean) : [],
+    keyAchievements: row[30] ? row[30].split(", ").filter(Boolean) : [],
+    workExperience: [], // Parse from workExperienceDetails if needed
+    education: [], // Parse from educationDetails if needed
+    projects: row[31] ? row[31].split(", ").filter(Boolean) : [],
+    awards: row[32] ? row[32].split(", ").filter(Boolean) : [],
+    publications: row[33] ? row[33].split(", ").filter(Boolean) : [],
+    references: row[34] ? row[34].split(", ").filter(Boolean) : [],
+    linkedinProfile: row[35] || "",
+    portfolioUrl: row[36] || "",
+    githubProfile: row[37] || "",
+    summary: row[38] || "",
+    resumeText: row[39] || "",
+    fileName: row[40] || "",
+    driveFileId: row[41] || "",
+    driveFileUrl: row[42] || "",
+    status: (row[45] as any) || "new",
+    tags: row[46] ? row[46].split(", ").filter(Boolean) : [],
+    rating: row[47] ? parseFloat(row[47]) : undefined,
+    notes: row[48] || "",
+    uploadedAt: row[49] || "",
+    updatedAt: row[50] || "",
+    lastContacted: row[51] || "",
+    interviewStatus: (row[52] as any) || "not-scheduled",
+    feedback: row[53] || "",
+  }
+}
+
+// Realign and clean up Google Sheets data structure
+export async function realignSpreadsheetData(): Promise<boolean> {
+  try {
+    console.log("=== Starting Google Sheets Data Realignment ===")
+    
+    // First, get all current data
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A:BB", // Include all columns
+    })
+
+    if (!response.data.values || response.data.values.length === 0) {
+      console.log("No data found to realign")
+      return true
+    }
+
+    const rows = response.data.values
+    const headers = rows[0] // First row should be headers
+    const dataRows = rows.slice(1) // Skip header row
+
+    console.log(`Found ${dataRows.length} data rows to realign`)
+
+    // Define the expected column structure
+    const expectedColumns = [
+      "ID", "Name", "Email", "Phone", "Date of Birth", "Gender", "Marital Status",
+      "Current Role", "Desired Role", "Current Company", "Location", "Preferred Location",
+      "Total Experience", "Current Salary", "Expected Salary", "Notice Period",
+      "Highest Qualification", "Degree", "Specialization", "University/College",
+      "Education Year", "Education Percentage/CGPA", "Additional Qualifications",
+      "Technical Skills", "Soft Skills", "Languages Known", "Certifications",
+      "Previous Companies", "Job Titles", "Work Duration", "Key Achievements",
+      "Work Experience Details", "Education Details", "Projects", "Awards",
+      "Publications", "References", "LinkedIn Profile", "Portfolio URL",
+      "GitHub Profile", "Summary/Objective", "Resume Text", "File Name",
+      "Drive File ID", "Drive File URL", "Status", "Tags", "Rating",
+      "Notes", "Uploaded At", "Updated At", "Last Contacted", "Interview Status", "Feedback"
+    ]
+
+    // Check if headers need to be updated
+    let headersNeedUpdate = false
+    if (headers.length !== expectedColumns.length) {
+      headersNeedUpdate = true
+    } else {
+      for (let i = 0; i < expectedColumns.length; i++) {
+        if (headers[i] !== expectedColumns[i]) {
+          headersNeedUpdate = true
+          break
+        }
+      }
+    }
+
+    if (headersNeedUpdate) {
+      console.log("Updating headers to match expected structure...")
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "Sheet1!A1:BB1",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [expectedColumns],
+        },
+      })
+      console.log("✅ Headers updated")
+    }
+
+    // Process each data row to ensure proper alignment
+    const realignedRows = dataRows.map((row, index) => {
+      const realignedRow = new Array(expectedColumns.length).fill("")
+      
+      // Map existing data to correct columns
+      for (let i = 0; i < Math.min(row.length, expectedColumns.length); i++) {
+        realignedRow[i] = row[i] || ""
+      }
+
+      // Ensure ID is present
+      if (!realignedRow[0]) {
+        realignedRow[0] = generateId()
+      }
+
+      // Ensure required fields have default values
+      if (!realignedRow[1]) realignedRow[1] = "Unknown Name"
+      if (!realignedRow[7]) realignedRow[7] = "Not specified"
+      if (!realignedRow[10]) realignedRow[10] = "Not specified"
+      if (!realignedRow[12]) realignedRow[12] = "Not specified"
+      if (!realignedRow[45]) realignedRow[45] = "new"
+      if (!realignedRow[46]) realignedRow[46] = ""
+      if (!realignedRow[49]) realignedRow[49] = new Date().toISOString()
+      if (!realignedRow[50]) realignedRow[50] = new Date().toISOString()
+      if (!realignedRow[52]) realignedRow[52] = "not-scheduled"
+
+      return realignedRow
+    })
+
+    // Clear existing data (excluding headers)
+    if (dataRows.length > 0) {
+      await sheets.spreadsheets.values.clear({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "Sheet1!A2:BB",
+      })
+      console.log("✅ Existing data cleared")
+    }
+
+    // Add realigned data
+    if (realignedRows.length > 0) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "Sheet1!A2:BB",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: realignedRows,
+        },
+      })
+      console.log("✅ Realigned data added")
+    }
+
+    console.log("=== Google Sheets Data Realignment Completed ===")
+    return true
+
+  } catch (error) {
+    console.error("❌ Failed to realign spreadsheet data:", error)
+    throw error
+  }
+}
+
+// Clean up duplicate entries and fix data inconsistencies
+export async function cleanupSpreadsheetData(): Promise<boolean> {
+  try {
+    console.log("=== Starting Google Sheets Data Cleanup ===")
+    
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A:BB",
+    })
+
+    if (!response.data.values || response.data.values.length <= 1) {
+      console.log("No data to clean up")
+      return true
+    }
+
+    const rows = response.data.values
+    const headers = rows[0]
+    const dataRows = rows.slice(1)
+
+    // Remove duplicate entries based on email OR combination of name + phone + location
+    const seenEmails = new Set<string>()
+    const seenNamePhoneLocation = new Set<string>()
+    const uniqueRows = [headers]
+
+    for (const row of dataRows) {
+      const email = row[2] || "" // Email column
+      const name = row[1] || "" // Name column
+      const phone = row[3] || "" // Phone column
+      const location = row[10] || "" // Location column
+      
+      // Always remove exact email duplicates (same person, multiple uploads)
+      if (email && seenEmails.has(email)) {
+        console.log(`Removing duplicate email: ${email}`)
+        continue
+      }
+      
+      // For name duplicates, check if they're actually the same person
+      // by looking at phone and location combination
+      if (name && name.trim()) {
+        const namePhoneLocationKey = `${name.toLowerCase().trim()}_${phone.toLowerCase().trim()}_${location.toLowerCase().trim()}`
+        
+        if (seenNamePhoneLocation.has(namePhoneLocationKey)) {
+          console.log(`Removing duplicate person: ${name} (same phone: ${phone}, location: ${location})`)
+          continue
+        }
+        
+        // Only add to seen set if we have meaningful phone or location data
+        if (phone.trim() || location.trim()) {
+          seenNamePhoneLocation.add(namePhoneLocationKey)
+        }
+      }
+
+      if (email) seenEmails.add(email)
+      uniqueRows.push(row)
+    }
+
+    if (uniqueRows.length !== rows.length) {
+      console.log(`Removed ${rows.length - uniqueRows.length} duplicate entries`)
+      
+      // Clear and rewrite the entire sheet
+      await sheets.spreadsheets.values.clear({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "Sheet1!A:BB",
+      })
+
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "Sheet1!A1:BB",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: uniqueRows,
+        },
+      })
+    }
+
+    console.log("=== Google Sheets Data Cleanup Completed ===")
+    return true
+  } catch (error) {
+    console.error("❌ Failed to cleanup spreadsheet data:", error)
+    throw error
+  }
+}
+
+// Function to restore potentially lost profiles by checking for missing data
+export async function restoreMissingProfiles(): Promise<{ restored: number; errors: string[] }> {
+  try {
+    console.log("=== Starting Profile Restoration Check ===")
+    
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A:BB",
+    })
+
+    if (!response.data.values || response.data.values.length <= 1) {
+      console.log("No data to check for restoration")
+      return { restored: 0, errors: [] }
+    }
+
+    const rows = response.data.values
+    const headers = rows[0]
+    const dataRows = rows.slice(1)
+    
+    let restored = 0
+    const errors: string[] = []
+
+    // Check for rows with missing critical data that might indicate lost profiles
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i]
+      const rowIndex = i + 2 // +2 because we start from row 2 and i is 0-based
+      
+      const name = row[1] || "" // Name column
+      const email = row[2] || "" // Email column
+      const phone = row[3] || "" // Phone column
+      const currentRole = row[7] || "" // Current Role column
+      const location = row[10] || "" // Location column
+      
+      // Check if this row has suspiciously missing data that might indicate a lost profile
+      const hasCriticalData = name.trim() && (email.trim() || phone.trim() || currentRole.trim() || location.trim())
+      
+      if (!hasCriticalData) {
+        console.log(`Row ${rowIndex} has missing critical data - might be a lost profile`)
+        console.log(`Name: "${name}", Email: "${email}", Phone: "${phone}", Role: "${currentRole}", Location: "${location}"`)
+        
+        // Try to infer missing data from other fields
+        let updated = false
+        
+        // If name is missing but we have other data, try to extract from resume text
+        if (!name.trim() && row[40]) { // Resume Text column
+          const resumeText = row[40]
+          const extractedName = extractNameFromResumeText(resumeText)
+          if (extractedName) {
+            row[1] = extractedName
+            updated = true
+            console.log(`Restored name "${extractedName}" for row ${rowIndex}`)
+          }
+        }
+        
+        // If location is missing but we have resume text, try to extract
+        if (!location.trim() && row[40]) {
+          const resumeText = row[40]
+          const extractedLocation = extractLocationFromResumeText(resumeText)
+          if (extractedLocation) {
+            row[10] = extractedLocation
+            updated = true
+            console.log(`Restored location "${extractedLocation}" for row ${rowIndex}`)
+          }
+        }
+        
+        if (updated) {
+          restored++
+        }
+      }
+    }
+
+    // If we made changes, update the sheet
+    if (restored > 0) {
+      console.log(`Restoring ${restored} profiles...`)
+      
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: "Sheet1!A2:BB",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: dataRows,
+        },
+      })
+      
+      console.log(`✅ Successfully restored ${restored} profiles`)
+    } else {
+      console.log("No profiles needed restoration")
+    }
+
+    return { restored, errors }
+
+  } catch (error) {
+    console.error("❌ Failed to restore missing profiles:", error)
+    return { restored: 0, errors: [error instanceof Error ? error.message : "Unknown error"] }
+  }
+}
+
+// Helper function to extract name from resume text
+function extractNameFromResumeText(resumeText: string): string | null {
+  if (!resumeText) return null
+  
+  const lines = resumeText.split('\n').map(line => line.trim()).filter(line => line.length > 0)
+  
+  // Look for name patterns in the first few lines
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    const line = lines[i]
+    
+    // Skip common resume headers
+    if (line.toLowerCase().includes('resume') || 
+        line.toLowerCase().includes('curriculum') || 
+        line.toLowerCase().includes('vitae') ||
+        line.toLowerCase().includes('cv') ||
+        line.includes('@') ||
+        line.match(/^\d/)) {
+      continue
+    }
+    
+    // Look for name patterns (2-4 words, starts with capital)
+    const namePattern = /^[A-Z][a-zA-Z\s]{2,40}$/
+    if (namePattern.test(line) && line.split(' ').length >= 2 && line.split(' ').length <= 4) {
+      return line
+    }
+  }
+  
+  return null
+}
+
+// Helper function to extract location from resume text
+function extractLocationFromResumeText(resumeText: string): string | null {
+  if (!resumeText) return null
+  
+  const locationPatterns = [
+    /(?:location|address|city)[:\s]*([A-Z][a-zA-Z\s,]+(?:City|Town|District|State|Country|India|INDIA))/i,
+    /(?:in|at|from)\s+([A-Z][a-zA-Z\s]+(?:City|Town|District|State|Country|India|INDIA))/i,
+    /([A-Z][a-zA-Z\s]+(?:City|Town|District|State|Country|India|INDIA))/i
+  ]
+  
+  for (const pattern of locationPatterns) {
+    const match = resumeText.match(pattern)
+    if (match && match[1]) {
+      const location = match[1].trim()
+      if (location.length > 3 && location.length < 100) {
+        return location
+      }
+    }
+  }
+  
+  return null
+}
+
+// Reparse individual candidate data
+export async function reparseCandidate(candidateId: string, blobUrl: string, fileName: string): Promise<boolean> {
+  try {
+    console.log(`=== Reparsing Candidate ${candidateId} from original file ===`)
+    
+    // Download the original file from blob storage
+    console.log("Downloading original file from blob storage...")
+    const response = await fetch(blobUrl)
+    
+    if (!response.ok) {
+      throw new Error(`Failed to download file from blob storage: ${response.status}`)
+    }
+    
+    const blob = await response.blob()
+    
+    // Create a File object from the blob
+    const file = new File([blob], fileName, { type: blob.type })
+    console.log(`✅ Downloaded file: ${fileName} (${blob.size} bytes)`)
+    
+    // Import the parseResume function dynamically to avoid circular dependencies
+    const { parseResume } = await import("./resume-parser")
+    
+    // Reparse the resume using the original file
+    console.log("Reparsing resume from original file...")
+    const reparsedData = await parseResume(file)
+    
+    if (!reparsedData || !reparsedData.name || reparsedData.name.toLowerCase() === "unknown") {
+      throw new Error("Reparsing failed to extract valid candidate information")
+    }
+
+    console.log(`✅ Successfully reparsed: ${reparsedData.name}`)
+
+    // Update the candidate in Google Sheets
+    await updateCandidate(candidateId, {
+      name: reparsedData.name,
+      email: reparsedData.email || "",
+      phone: reparsedData.phone || "",
+      currentRole: reparsedData.currentRole || "Not specified",
+      desiredRole: reparsedData.desiredRole || "",
+      currentCompany: reparsedData.currentCompany || "",
+      location: reparsedData.location || "Not specified",
+      preferredLocation: reparsedData.preferredLocation || "",
+      totalExperience: reparsedData.totalExperience || "Not specified",
+      currentSalary: reparsedData.currentSalary || "",
+      expectedSalary: reparsedData.expectedSalary || "",
+      noticePeriod: reparsedData.noticePeriod || "",
+      highestQualification: reparsedData.highestQualification || "",
+      degree: reparsedData.degree || "",
+      specialization: reparsedData.specialization || "",
+      university: reparsedData.university || "",
+      educationYear: reparsedData.educationYear || "",
+      educationPercentage: reparsedData.educationPercentage || "",
+      technicalSkills: reparsedData.technicalSkills || [],
+      softSkills: reparsedData.softSkills || [],
+      languagesKnown: reparsedData.languagesKnown || [],
+      certifications: reparsedData.certifications || [],
+      previousCompanies: reparsedData.previousCompanies || [],
+      keyAchievements: reparsedData.keyAchievements || [],
+      projects: reparsedData.projects || [],
+      linkedinProfile: reparsedData.linkedinProfile || "",
+      summary: reparsedData.summary || "",
+      resumeText: reparsedData.resumeText || "",
+      updatedAt: new Date().toISOString(),
+    })
+
+    console.log(`✅ Candidate ${candidateId} reparsed and updated successfully`)
+    return true
+
+  } catch (error) {
+    console.error(`❌ Failed to reparse candidate ${candidateId}:`, error)
+    throw error
+  }
+}
+
+// Get candidates with parsing issues (unknown names, missing data)
+export async function getCandidatesWithIssues(): Promise<ComprehensiveCandidateData[]> {
+  try {
+    const allCandidates = await getAllCandidates()
+    
+    return allCandidates.filter(candidate => {
+      // Check for common parsing issues
+      return !candidate.name || 
+             candidate.name.toLowerCase() === "unknown" ||
+             candidate.name.toLowerCase() === "not specified" ||
+             candidate.name.trim() === "" ||
+             candidate.name.length < 2 ||
+             (!candidate.email && !candidate.phone && !candidate.currentRole) ||
+             candidate.currentRole === "Not specified" ||
+             candidate.location === "Not specified"
+    })
+  } catch (error) {
+    console.error("❌ Failed to get candidates with issues:", error)
+    throw error
+  }
+}
+
+// Bulk reparse all candidates with issues
+export async function bulkReparseCandidates(): Promise<{ success: number; failed: number; errors: string[] }> {
+  try {
+    console.log("=== Starting Bulk Reparse of Candidates with Issues ===")
+    
+    const candidatesWithIssues = await getCandidatesWithIssues()
+    console.log(`Found ${candidatesWithIssues.length} candidates with parsing issues`)
+    
+    let successCount = 0
+    let failedCount = 0
+    const errors: string[] = []
+    
+    for (const candidate of candidatesWithIssues) {
+      try {
+        if (candidate.driveFileUrl && candidate.fileName) {
+          await reparseCandidate(candidate.id!, candidate.driveFileUrl, candidate.fileName)
+          successCount++
+          console.log(`✅ Reparsed candidate: ${candidate.name || candidate.id}`)
+        } else {
+          failedCount++
+          errors.push(`Candidate ${candidate.id}: No original file available for reparsing`)
+        }
+      } catch (error) {
+        failedCount++
+        const errorMsg = `Candidate ${candidate.id}: ${error instanceof Error ? error.message : "Unknown error"}`
+        errors.push(errorMsg)
+        console.error(errorMsg)
+      }
+      
+      // Add a small delay to avoid overwhelming the APIs
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+    
+    console.log(`=== Bulk Reparse Completed: ${successCount} success, ${failedCount} failed ===`)
+    
+    return {
+      success: successCount,
+      failed: failedCount,
+      errors
+    }
+    
+  } catch (error) {
+    console.error("❌ Bulk reparse failed:", error)
+    throw error
+  }
+}
+
+// Realign all existing data to ensure proper column structure
+export async function realignAllData(): Promise<boolean> {
+  try {
+    console.log("=== Starting Complete Data Realignment ===")
+    
+    // First, get all current data
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A:BB", // Include all columns
+    })
+
+    if (!response.data.values || response.data.values.length === 0) {
+      console.log("No data found to realign")
+      return true
+    }
+
+    const rows = response.data.values
+    const headers = rows[0] // First row should be headers
+    const dataRows = rows.slice(1) // Skip header row
+
+    console.log(`Found ${dataRows.length} data rows to realign`)
+
+    // Define the expected column structure
+    const expectedColumns = [
+      "ID", "Name", "Email", "Phone", "Date of Birth", "Gender", "Marital Status",
+      "Current Role", "Desired Role", "Current Company", "Location", "Preferred Location",
+      "Total Experience", "Current Salary", "Expected Salary", "Notice Period",
+      "Highest Qualification", "Degree", "Specialization", "University/College",
+      "Education Year", "Education Percentage/CGPA", "Additional Qualifications",
+      "Technical Skills", "Soft Skills", "Languages Known", "Certifications",
+      "Previous Companies", "Job Titles", "Work Duration", "Key Achievements",
+      "Work Experience Details", "Education Details", "Projects", "Awards",
+      "Publications", "References", "LinkedIn Profile", "Portfolio URL",
+      "GitHub Profile", "Summary/Objective", "Resume Text", "File Name",
+      "Drive File ID", "Drive File URL", "Status", "Tags", "Rating",
+      "Notes", "Uploaded At", "Updated At", "Last Contacted", "Interview Status", "Feedback"
+    ]
+
+    // Always update headers to ensure consistency
+    console.log("Updating headers to match expected structure...")
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A1:BB1",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [expectedColumns],
+      },
+    })
+    console.log("✅ Headers updated")
+
+    // Process each data row to ensure proper alignment
+    const realignedRows = dataRows.map((row, index) => {
+      const realignedRow = new Array(expectedColumns.length).fill("")
+      
+      // Map existing data to correct columns
+      for (let i = 0; i < Math.min(row.length, expectedColumns.length); i++) {
+        realignedRow[i] = row[i] || ""
+      }
+
+      // Ensure ID is present
+      if (!realignedRow[0]) {
+        realignedRow[0] = generateId()
+      }
+
+      // Ensure required fields have default values
+      if (!realignedRow[1]) realignedRow[1] = "Unknown Name"
+      if (!realignedRow[7]) realignedRow[7] = "Not specified"
+      if (!realignedRow[10]) realignedRow[10] = "Not specified"
+      if (!realignedRow[12]) realignedRow[12] = "Not specified"
+      if (!realignedRow[45]) realignedRow[45] = "new"
+      if (!realignedRow[46]) realignedRow[46] = ""
+      if (!realignedRow[49]) realignedRow[49] = new Date().toISOString()
+      if (!realignedRow[50]) realignedRow[50] = new Date().toISOString()
+      if (!realignedRow[52]) realignedRow[52] = "not-scheduled"
+
+      return realignedRow
+    })
+
+    // Update all rows at once for better performance
+    console.log("Updating all data rows with proper alignment...")
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A2:BB" + (realignedRows.length + 1),
+      valueInputOption: "RAW",
+      requestBody: {
+        values: realignedRows,
+      },
+    })
+
+    console.log(`✅ Successfully realigned ${realignedRows.length} data rows`)
+    return true
+
+  } catch (error) {
+    console.error("❌ Failed to realign data:", error)
     throw error
   }
 }

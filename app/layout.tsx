@@ -1,5 +1,7 @@
 import type { Metadata } from 'next'
 import './globals.css'
+import { CandidateProvider } from '@/contexts/candidate-context'
+import { CookieConsentWrapper } from '@/components/cookie-consent-wrapper'
 
 export const metadata: Metadata = {
   title: 'Truckinzy Data',
@@ -14,7 +16,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="bg-gray-50">{children}</body>
+      <body className="bg-gray-50" suppressHydrationWarning={true}>
+        <CandidateProvider>
+          {children}
+          <CookieConsentWrapper />
+        </CandidateProvider>
+      </body>
     </html>
   )
 }
