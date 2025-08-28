@@ -1,13 +1,13 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Search, Download, Eye, Filter, User, MapPin, Briefcase, Building, Trash2, RefreshCw } from "lucide-react"
+import { Search, Download, Eye, Filter, User, MapPin, Briefcase, Building, Trash2, RefreshCw, Star } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { CandidatePreviewDialog } from "./candidate-preview-dialog"
 import { useCandidates } from "@/contexts/candidate-context"
@@ -44,34 +44,35 @@ export function CandidateDashboard() {
   const { 
     candidates, 
     isLoading, 
-    hasMore, 
     refreshCandidates, 
-    loadMoreCandidates,
-    cacheEnabled,
     lastFetched
   } = useCandidates()
   
   const [filteredCandidates, setFilteredCandidates] = useState<Candidate[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
+  const [sortBy, setSortBy] = useState<string>("recent")
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null)
   const [mounted, setMounted] = useState(false)
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
   const [reparsingCandidates, setReparsingCandidates] = useState<Set<string>>(new Set())
   const [fixingAll, setFixingAll] = useState(false)
   const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 })
-  const [isLoadingMore, setIsLoadingMore] = useState(false)
+  const [updatingStatuses, setUpdatingStatuses] = useState<Set<string>>(new Set())
   const { toast } = useToast()
-  
-  // Ref for intersection observer
-  const observerRef = useRef<IntersectionObserver>()
-  const lastCandidateRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setMounted(true)
   }, [])
 
   const filterCandidates = useCallback(() => {
+    console.log("🔍 Filtering candidates:", { 
+      totalCandidates: candidates.length, 
+      searchTerm, 
+      statusFilter,
+      sortBy
+    })
+    
     let filtered = candidates
 
     if (searchTerm) {
@@ -89,33 +90,59 @@ export function CandidateDashboard() {
       filtered = filtered.filter((candidate) => candidate.status === statusFilter)
     }
 
+    // Apply sorting
+    filtered = [...filtered].sort((a, b) => {
+      switch (sortBy) {
+        case "recent":
+          // Sort by upload date (newest first) - this should already be the default from API
+          const dateA = new Date(a.uploadedAt || 0).getTime()
+          const dateB = new Date(b.uploadedAt || 0).getTime()
+          return dateB - dateA
+        case "name":
+          // Sort by name A-Z
+          return (a.name || "").localeCompare(b.name || "")
+        case "status":
+          // Sort by status
+          return (a.status || "").localeCompare(b.status || "")
+        default:
+          return 0
+      }
+    })
+
+    console.log("✅ Filtered and sorted candidates:", filtered.length)
     setFilteredCandidates(filtered)
-  }, [candidates, searchTerm, statusFilter])
+  }, [candidates, searchTerm, statusFilter, sortBy])
 
   useEffect(() => {
     if (mounted) {
+      console.log("🎯 Component mounted, filtering candidates...")
       filterCandidates()
     }
   }, [mounted, filterCandidates])
 
-  // Intersection observer for infinite scroll
-  const lastCandidateElementRef = useCallback((node: HTMLDivElement) => {
-    if (isLoading || isLoadingMore) return
-    
-    if (observerRef.current) observerRef.current.disconnect()
-    
-    observerRef.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && hasMore) {
-        setIsLoadingMore(true)
-        loadMoreCandidates().finally(() => setIsLoadingMore(false))
-      }
+  // Auto-refresh candidates every time the component is accessed
+  useEffect(() => {
+    if (mounted) {
+      console.log("🔄 Auto-refreshing candidates...")
+      refreshCandidates()
+    }
+  }, [mounted, refreshCandidates])
+
+  // Debug logging
+  useEffect(() => {
+    console.log("📊 Candidates state updated:", {
+      candidatesCount: candidates.length,
+      filteredCount: filteredCandidates.length,
+      isLoading,
+      mounted
     })
-    
-    if (node) observerRef.current.observe(node)
-  }, [isLoading, isLoadingMore, hasMore, loadMoreCandidates])
+  }, [candidates, filteredCandidates, isLoading, mounted])
 
   const updateCandidateStatus = async (candidateId: string, newStatus: string) => {
     try {
+      // Add loading state
+      setUpdatingStatuses(prev => new Set(prev).add(candidateId))
+      
       const response = await fetch(`/api/candidates/${candidateId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -127,6 +154,10 @@ export function CandidateDashboard() {
         if (selectedCandidate && selectedCandidate._id === candidateId) {
           setSelectedCandidate({ ...selectedCandidate, status: newStatus as any })
         }
+        
+        // Refresh candidates to get updated data
+        await refreshCandidates()
+        
         toast({
           title: "Status Updated",
           description: "Candidate status updated successfully",
@@ -140,6 +171,13 @@ export function CandidateDashboard() {
         title: "Error",
         description: "Failed to update candidate status",
         variant: "destructive",
+      })
+    } finally {
+      // Remove loading state
+      setUpdatingStatuses(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(candidateId)
+        return newSet
       })
     }
   }
@@ -157,10 +195,24 @@ export function CandidateDashboard() {
         if (selectedCandidate && selectedCandidate._id === candidateId) {
           setSelectedCandidate({ ...selectedCandidate, notes })
         }
+        
+        // Refresh candidates to get updated data
+        await refreshCandidates()
+        
+        toast({
+          title: "Notes Updated",
+          description: "Candidate notes updated successfully",
+        })
       } else {
         throw new Error("Failed to update notes")
       }
     } catch (error) {
+      console.error("Notes update error:", error)
+      toast({
+        title: "Error",
+        description: "Failed to update candidate notes",
+        variant: "destructive",
+      })
       throw error
     }
   }
@@ -178,10 +230,24 @@ export function CandidateDashboard() {
         if (selectedCandidate && selectedCandidate._id === candidateId) {
           setSelectedCandidate({ ...selectedCandidate, rating })
         }
+        
+        // Refresh candidates to get updated data
+        await refreshCandidates()
+        
+        toast({
+          title: "Rating Updated",
+          description: "Candidate rating updated successfully",
+        })
       } else {
         throw new Error("Failed to update rating")
       }
     } catch (error) {
+      console.error("Rating update error:", error)
+      toast({
+        title: "Error",
+        description: "Failed to update candidate rating",
+        variant: "destructive",
+      })
       throw error
     }
   }
@@ -478,60 +544,96 @@ export function CandidateDashboard() {
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Candidate Database</h2>
           <p className="text-gray-600">Manage and review all uploaded candidates</p>
-          {cacheEnabled && lastFetched && (
-            <p className="text-xs text-green-600 mt-1">
-              📦 Cached data • Last updated: {lastFetched.toLocaleTimeString()}
-            </p>
-          )}
-          {cacheEnabled && !lastFetched && (
-            <p className="text-xs text-blue-600 mt-1">
-              🔄 Caching enabled • Loading data...
-            </p>
-          )}
-          {!cacheEnabled && (
-            <p className="text-xs text-orange-600 mt-1">
-              ⚠️ Caching disabled • Data loads fresh each time
-            </p>
-          )}
         </div>
         <div className="flex items-center space-x-2">
           <Button 
             variant="outline" 
             size="sm" 
-            onClick={() => refreshCandidates()}
+            onClick={refreshCandidates}
             disabled={isLoading}
             className="flex items-center space-x-2"
           >
-            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            <RefreshCw className="h-4 w-4" />
             Refresh
           </Button>
-          {cacheEnabled && (
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={() => refreshCandidates(true)}
-              disabled={isLoading}
-              className="flex items-center space-x-2"
-              title="Force refresh from server (bypass cache)"
-            >
-              <RefreshCw className="h-4 w-4" />
-              Force Refresh
-            </Button>
-          )}
           <Button 
             variant="outline" 
             size="sm" 
-            onClick={() => {
-              console.log('🔍 Cache Debug Info:')
-              console.log('- Cache enabled:', cacheEnabled)
-              console.log('- Last fetched:', lastFetched)
-              console.log('- Candidates count:', candidates.length)
-              console.log('- LocalStorage cache:', localStorage.getItem('candidate-cache'))
+            onClick={async () => {
+              console.log("🧪 Testing API manually...")
+              try {
+                const response = await fetch('/api/candidates')
+                const data = await response.json()
+                console.log("🧪 Manual API test result:", data)
+                toast({
+                  title: "API Test",
+                  description: `API returned ${Array.isArray(data) ? data.length : 'unknown'} candidates`,
+                })
+              } catch (error) {
+                console.error("🧪 Manual API test failed:", error)
+                toast({
+                  title: "API Test Failed",
+                  description: "Check console for details",
+                  variant: "destructive",
+                })
+              }
             }}
             className="flex items-center space-x-2"
-            title="Debug cache information"
+          >
+            🧪 Test API
+          </Button>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={async () => {
+              console.log("🔍 Checking debug info...")
+              try {
+                const response = await fetch('/api/debug')
+                const data = await response.json()
+                console.log("🔍 Debug info:", data)
+                toast({
+                  title: "Debug Info",
+                  description: "Check console for environment variables",
+                })
+              } catch (error) {
+                console.error("🔍 Debug check failed:", error)
+                toast({
+                  title: "Debug Failed",
+                  description: "Check console for details",
+                  variant: "destructive",
+                })
+              }
+            }}
+            className="flex items-center space-x-2"
           >
             🔍 Debug
+          </Button>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={async () => {
+              console.log("🏥 Checking system health...")
+              try {
+                const response = await fetch('/api/health')
+                const data = await response.json()
+                console.log("🏥 Health check result:", data)
+                toast({
+                  title: "Health Check",
+                  description: data.googleSheets.connected ? "System healthy" : "Google Sheets issue",
+                  variant: data.googleSheets.connected ? "default" : "destructive",
+                })
+              } catch (error) {
+                console.error("🏥 Health check failed:", error)
+                toast({
+                  title: "Health Check Failed",
+                  description: "Check console for details",
+                  variant: "destructive",
+                })
+              }
+            }}
+            className="flex items-center space-x-2"
+          >
+            🏥 Health
           </Button>
           <Button variant={viewMode === "grid" ? "default" : "outline"} size="sm" onClick={() => setViewMode("grid")}>
             Grid
@@ -628,7 +730,7 @@ export function CandidateDashboard() {
         {filteredCandidates.length > 0 && (
           <div className="flex items-center space-x-2 text-sm text-gray-500">
             <span>Sort by:</span>
-            <Select defaultValue="recent">
+            <Select value={sortBy} onValueChange={setSortBy}>
               <SelectTrigger className="w-32 h-8">
                 <SelectValue />
               </SelectTrigger>
@@ -647,19 +749,44 @@ export function CandidateDashboard() {
         <Card>
           <CardContent className="p-12 text-center">
             <User className="h-16 w-16 text-gray-300 mx-auto mb-4" />
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">No candidates found</h3>
-            <p className="text-gray-600">
-              {candidates.length === 0 ? "Upload some resumes to get started." : "Try adjusting your search criteria."}
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              {candidates.length === 0 ? "No candidates found" : "No candidates match your search"}
+            </h3>
+            <p className="text-gray-600 mb-4">
+              {candidates.length === 0 
+                ? "Upload some resumes to get started or check if the Google Sheets connection is working." 
+                : "Try adjusting your search criteria or status filter."
+              }
             </p>
+            {candidates.length === 0 && (
+              <div className="space-y-2">
+                <p className="text-sm text-gray-500">
+                  Total candidates in context: {candidates.length}
+                </p>
+                <p className="text-sm text-gray-500">
+                  Loading state: {isLoading ? "Loading..." : "Not loading"}
+                </p>
+                <p className="text-sm text-gray-500">
+                  Last fetched: {lastFetched ? lastFetched.toLocaleString() : "Never"}
+                </p>
+                <Button 
+                  variant="outline" 
+                  onClick={refreshCandidates}
+                  disabled={isLoading}
+                  className="mt-2"
+                >
+                  {isLoading ? "Loading..." : "Try Again"}
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       ) : viewMode === "grid" ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredCandidates.map((candidate, index) => (
-                          <Card 
-                key={candidate._id} 
+              <Card 
+                key={`${candidate._id}-${index}`}
                 className="hover:shadow-lg transition-all duration-300 group max-w-sm"
-                ref={index === filteredCandidates.length - 1 ? lastCandidateElementRef : null}
               >
               <CardContent className="p-6">
                 <div className="flex items-start justify-between mb-4">
@@ -775,9 +902,17 @@ export function CandidateDashboard() {
                   <Select
                     value={candidate.status}
                     onValueChange={(value) => updateCandidateStatus(candidate._id, value)}
+                    disabled={updatingStatuses.has(candidate._id)}
                   >
                     <SelectTrigger className="w-32 h-8">
-                      <SelectValue />
+                      {updatingStatuses.has(candidate._id) ? (
+                        <div className="flex items-center space-x-2">
+                          <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600"></div>
+                          <span className="text-xs">Updating...</span>
+                        </div>
+                      ) : (
+                        <SelectValue />
+                      )}
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="new">New</SelectItem>
@@ -798,10 +933,9 @@ export function CandidateDashboard() {
         // List View
                   <div className="space-y-4">
             {filteredCandidates.map((candidate, index) => (
-                          <Card 
-                key={candidate._id} 
+              <Card 
+                key={`${candidate._id}-${index}`}
                 className="hover:shadow-md transition-shadow"
-                ref={index === filteredCandidates.length - 1 ? lastCandidateElementRef : null}
               >
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
@@ -914,9 +1048,17 @@ export function CandidateDashboard() {
                     <Select
                       value={candidate.status}
                       onValueChange={(value) => updateCandidateStatus(candidate._id, value)}
+                      disabled={updatingStatuses.has(candidate._id)}
                     >
                       <SelectTrigger className="w-32 h-8">
-                        <SelectValue />
+                        {updatingStatuses.has(candidate._id) ? (
+                          <div className="flex items-center space-x-2">
+                            <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600"></div>
+                            <span className="text-xs">Updating...</span>
+                          </div>
+                        ) : (
+                          <SelectValue />
+                        )}
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="new">New</SelectItem>
@@ -935,16 +1077,6 @@ export function CandidateDashboard() {
           ))}
         </div>
       )}
-
-              {/* Loading More Indicator */}
-        {isLoadingMore && (
-          <div className="flex justify-center p-4">
-            <div className="flex items-center space-x-2">
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
-              <span className="text-gray-600">Loading more candidates...</span>
-            </div>
-          </div>
-        )}
 
         {/* Candidate Preview Dialog */}
         <CandidatePreviewDialog

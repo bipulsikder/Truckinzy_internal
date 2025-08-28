@@ -2,6 +2,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai"
 import { emailRegex, phoneRegex } from "./regexPatterns"
 import pdfParse from "pdf-parse"
 import mammoth from "mammoth"
+import JSZip from "jszip"
 import { ComprehensiveCandidateData } from "./google-sheets"
 
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null
@@ -19,41 +20,11 @@ export async function parseResume(file: File): Promise<ComprehensiveCandidateDat
           console.log("✅ Gemini parsing successful")
           return result
         } else {
-          console.log("⚠️ Gemini parsing failed validation, trying OpenAI...")
+          console.log("⚠️ Gemini parsing failed validation, trying basic parsing...")
         }
       }
     } catch (error) {
       console.log("⚠️ Gemini parsing failed:", error)
-    }
-
-    // Try OpenAI parsing as alternative
-    try {
-      console.log("Attempting OpenAI parsing...")
-      const result = await parseResumeWithOpenAI(file)
-      if (isValidParsedData(result)) {
-        console.log("✅ OpenAI parsing successful")
-        return result
-      } else {
-        console.log("⚠️ OpenAI parsing failed validation, trying Affinda...")
-      }
-    } catch (error) {
-      console.log("⚠️ OpenAI parsing failed:", error)
-    }
-
-    // Try Affinda parsing
-    try {
-      if (process.env.AFFINDA_API_KEY) {
-        console.log("Attempting Affinda parsing...")
-        const result = await parseResumeWithAffinda(file)
-        if (isValidParsedData(result)) {
-          console.log("✅ Affinda parsing successful")
-          return result
-        } else {
-          console.log("⚠️ Affinda parsing failed validation, trying basic parsing...")
-        }
-      }
-    } catch (error) {
-      console.log("⚠️ Affinda parsing failed:", error)
     }
 
     // Fallback to enhanced basic parsing
@@ -107,140 +78,341 @@ function isValidParsedData(data: any): boolean {
 
 // Parse resume using Google Gemini
 async function parseResumeWithGemini(file: File): Promise<ComprehensiveCandidateData> {
+  if (!genAI) {
+    throw new Error("Gemini API not configured")
+  }
+    
   try {
-    console.log("Using Google Gemini for parsing...")
-    
+    console.log("🔄 Starting Gemini parsing...")
     const text = await extractTextFromFile(file)
-    if (!text || text.length < 50) {
-      throw new Error("Insufficient text extracted from file")
-    }
+    console.log(`📄 Extracted text length: ${text.length} characters`)
+    console.log(`📄 First 200 characters: ${text.substring(0, 200)}...`)
 
-    // Limit text to avoid token limits
-    const limitedText = text.substring(0, 3000)
+    // Limit text to avoid token limits but provide enough context
+    const limitedText = text.substring(0, 5000)
     
-    const prompt = `Please parse this resume and extract the following information in JSON format:
+    const prompt = `You are an expert resume parser with 10+ years of experience in HR and recruitment. Your task is to extract accurate information from this resume and return ONLY a valid JSON object.
 
+CRITICAL INSTRUCTIONS:
+1. Return ONLY valid JSON - no explanations, no markdown, no extra text
+2. If a field is not found, use empty string "" for text or empty array [] for lists
+3. For arrays, ensure each item is a string
+4. For experience, calculate total years from all work experience and use format like "5 years" or "3.5 years"
+5. For skills, extract ONLY actual skills mentioned in the resume, don't make up generic ones
+6. For location, use format like "Mumbai, Maharashtra" or "Delhi, India"
+7. For name, extract the actual person's name from the resume header or personal details section
+8. For current role, extract the job title they currently hold (most recent position)
+9. For current company, extract the company they currently work for (most recent employer)
+10. For education, focus on the highest qualification achieved
+11. For previous companies, list all companies mentioned in work experience (excluding current)
+12. Be very careful with name extraction - look for patterns like "Name:", "Full Name:", or prominent text at the top
+
+NAME EXTRACTION RULES:
+- Look for the person's name at the very top of the resume, usually in large/bold text
+- Common patterns: "Name: [Name]", "Full Name: [Name]", or just the name prominently displayed
+- The name is usually the first thing you see, not project names or company names
+- If you see "Bipul Sikder" at the top, that's the name, not "Railway infrastructure projects"
+- Look for personal contact information section which usually contains the name
+- The name is typically followed by contact details like phone, email, or address
+- DO NOT extract project names, company names, or other text as the person's name
+- The name should be a person's name (2-4 words), not a company, project, or section header
+- Common Indian names like "Bipul Sikder", "Deepak Kumar", "Priya Sharma" are what you're looking for
+- If you see text like "Railway infrastructure projects" or "Tech Lead", that's NOT a person's name
+
+EXTRACT THESE FIELDS WITH HIGH ACCURACY:
 {
-  "name": "Full name of the person",
-  "email": "Email address if found",
-  "phone": "Phone number if found",
-  "currentRole": "Current job title/role",
-  "currentCompany": "Current company name",
-  "location": "City, State, Country",
-  "totalExperience": "Total years of experience (e.g., '5 years')",
-  "highestQualification": "Highest education level (e.g., 'Master's', 'Bachelor's')",
-  "degree": "Specific degree (e.g., 'B.Tech Computer Science')",
-  "university": "University/College name",
-  "educationYear": "Year of graduation",
-  "technicalSkills": ["skill1", "skill2", "skill3"],
-  "softSkills": ["skill1", "skill2", "skill3"],
-  "languagesKnown": ["language1", "language2"],
-  "certifications": ["cert1", "cert2"],
-  "previousCompanies": ["company1", "company2"],
-  "keyAchievements": ["achievement1", "achievement2"],
-  "projects": ["project1", "project2"],
-  "summary": "Professional summary or objective"
+  "name": "Full name (required - must be extracted from resume header or personal details)",
+  "email": "Email address if found (look for @ symbol)",
+  "phone": "Phone number with country code if available (look for patterns like +91, 10 digits)",
+  "currentRole": "Current job title/position (most recent work experience)",
+  "currentCompany": "Current employer company name (most recent work experience)",
+  "location": "Current location (city, state, country) - look for address or location fields",
+  "totalExperience": "Total years of experience calculated from all work experience",
+  "highestQualification": "Highest education level achieved (e.g., 'Master's Degree', 'Bachelor's Degree')",
+  "degree": "Specific degree name (e.g., 'B.Tech Computer Science', 'MBA Finance')",
+  "university": "University/College name where highest degree was obtained",
+  "educationYear": "Year of graduation for highest degree",
+  "technicalSkills": ["actual technical skills mentioned in resume"],
+  "softSkills": ["actual soft skills mentioned in resume"],
+  "languagesKnown": ["languages mentioned in resume"],
+  "certifications": ["certifications mentioned in resume"],
+  "previousCompanies": ["all companies from work experience excluding current"],
+  "keyAchievements": ["key achievements mentioned in resume"],
+  "projects": ["projects mentioned in resume"],
+  "summary": "Professional summary or objective statement if present"
 }
 
-Resume text:
+RESUME TEXT:
 ${limitedText}
 
-Please ensure the JSON is valid and all fields are properly extracted. If a field is not found, use an empty string or empty array as appropriate.`
+Return ONLY the JSON object:`
 
     // Try different Gemini models with fallback
-    const models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+    const models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
     let lastError = null
 
-    for (const model of models) {
+    for (const modelName of models) {
       try {
-        console.log(`Trying Gemini model: ${model}`)
+        console.log(`🔄 Trying Gemini model: ${modelName}`)
+        const model = genAI.getGenerativeModel({ model: modelName })
         
-        const geminiModel = genAI!.getGenerativeModel({ model })
+        const result = await model.generateContent(prompt)
+        const content = result.response.text()
         
-        const result = await Promise.race([
-          geminiModel.generateContent(prompt),
-          new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout')), 30000)
-          )
-        ])
+        console.log("Raw Gemini response:", content)
+        console.log("🔍 Looking for name in response...")
 
-        const response = await (result as any).response
-        const content = response.text()
-
-        if (!content) {
-          throw new Error("No content received from Gemini")
+        // Extract JSON from the response - try multiple approaches
+        let parsedData = null
+        
+        // Method 1: Look for JSON between curly braces
+        const jsonMatch = content.match(/\{[\s\S]*\}/)
+        if (jsonMatch) {
+          try {
+            parsedData = JSON.parse(jsonMatch[0])
+            console.log("✅ JSON extracted using method 1")
+          } catch (e) {
+            console.log("Method 1 failed, trying method 2")
+          }
+        }
+        
+        // Method 2: Look for JSON after "Return ONLY the JSON object:"
+        if (!parsedData) {
+          const afterPrompt = content.split("Return ONLY the JSON object:")
+          if (afterPrompt.length > 1) {
+            try {
+              const jsonPart = afterPrompt[1].trim()
+              const jsonMatch2 = jsonPart.match(/\{[\s\S]*\}/)
+              if (jsonMatch2) {
+                parsedData = JSON.parse(jsonMatch2[0])
+                console.log("✅ JSON extracted using method 2")
+              }
+            } catch (e) {
+              console.log("Method 2 failed, trying method 3")
+            }
+          }
+        }
+        
+        // Method 3: Try to find any valid JSON in the content
+        if (!parsedData) {
+          const jsonMatches = content.match(/\{[^{}]*\}/g)
+          if (jsonMatches) {
+            for (const match of jsonMatches) {
+              try {
+                parsedData = JSON.parse(match)
+                if (parsedData.name && parsedData.name !== "Unknown") {
+                  console.log("✅ JSON extracted using method 3")
+                  break
+                }
+              } catch (e) {
+                continue
+              }
+            }
+          }
         }
 
-        // Extract JSON from the response
-        const jsonMatch = content.match(/\{[\s\S]*\}/)
-        if (!jsonMatch) {
+        if (!parsedData) {
           throw new Error("No valid JSON found in Gemini response")
         }
 
-        const parsedData = JSON.parse(jsonMatch[0])
+        console.log("Parsed JSON data:", parsedData)
         
-        // Map to ComprehensiveCandidateData format
+        // Validate the extracted name - it should not be a project name or company name
+        if (parsedData.name) {
+          const suspiciousNames = [
+            'railway', 'infrastructure', 'projects', 'tech', 'company', 'ltd', 'pvt', 'inc',
+            'corporation', 'enterprise', 'solutions', 'systems', 'platform', 'app', 'web',
+            'resume', 'curriculum', 'vitae', 'cv', 'skills', 'experience', 'education',
+            'lead', 'engineer', 'developer', 'manager', 'specialist', 'coordinator'
+          ]
+          
+          const nameLower = parsedData.name.toLowerCase()
+          const isSuspicious = suspiciousNames.some(word => nameLower.includes(word))
+          
+          if (isSuspicious) {
+            console.log("⚠️ Suspicious name detected, likely incorrect extraction")
+            console.log("Suspicious name:", parsedData.name)
+            // Try to find a better name in the text
+            const namePatterns = [
+              /name\s*:\s*([^\n]+)/i,
+              /full\s*name\s*:\s*([^\n]+)/i,
+              /^([A-Z][a-z]+\s+[A-Z][a-z]+)/m,
+              /^([A-Z][a-z]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+)/m
+            ]
+            
+            for (const pattern of namePatterns) {
+              const match = text.match(pattern)
+              if (match && match[1]) {
+                const potentialName = match[1].trim()
+                if (potentialName.length > 2 && !suspiciousNames.some(word => potentialName.toLowerCase().includes(word))) {
+                  console.log("✅ Found better name using pattern:", potentialName)
+                  parsedData.name = potentialName
+                  break
+                }
+              }
+            }
+            
+            // If still suspicious, try to find the actual person's name from the resume
+            if (isSuspicious) {
+              console.log("🔍 Attempting to extract actual person name from resume text...")
+              const actualName = extractActualPersonName(text)
+              if (actualName) {
+                console.log("✅ Found actual person name:", actualName)
+                parsedData.name = actualName
+              }
+            }
+          }
+        }
+
+        // Validate and clean the parsed data
+        const cleanedData = {
+          name: cleanString(parsedData.name),
+          email: cleanString(parsedData.email),
+          phone: cleanString(parsedData.phone),
+          currentRole: cleanString(parsedData.currentRole),
+          currentCompany: cleanString(parsedData.currentCompany),
+          location: cleanString(parsedData.location),
+          totalExperience: cleanString(parsedData.totalExperience),
+          highestQualification: cleanString(parsedData.highestQualification),
+          degree: cleanString(parsedData.degree),
+          university: cleanString(parsedData.university),
+          educationYear: cleanString(parsedData.educationYear),
+          technicalSkills: cleanArray(parsedData.technicalSkills),
+          softSkills: cleanArray(parsedData.softSkills),
+          languagesKnown: cleanArray(parsedData.languagesKnown),
+          certifications: cleanArray(parsedData.certifications),
+          previousCompanies: cleanArray(parsedData.previousCompanies),
+          keyAchievements: cleanArray(parsedData.keyAchievements),
+          projects: cleanArray(parsedData.projects),
+          summary: cleanString(parsedData.summary)
+        }
+
+        // Enhanced validation and correction
+        if (!cleanedData.name || cleanedData.name === "Unknown" || cleanedData.name.length < 2) {
+          // Try to extract name from resume text if Gemini failed
+          const nameFromText = extractNameFromText(text)
+          if (nameFromText) {
+            cleanedData.name = nameFromText
+            console.log("✅ Name corrected from text analysis:", cleanedData.name)
+          }
+        }
+
+        // Improve location if not found
+        if (!cleanedData.location || cleanedData.location === "Not specified") {
+          const locationFromText = extractLocationFromText(text)
+          if (locationFromText) {
+            cleanedData.location = locationFromText
+            console.log("✅ Location corrected from text analysis:", cleanedData.location)
+          }
+        }
+
+        // Improve current role if not found
+        if (!cleanedData.currentRole || cleanedData.currentRole === "Not specified") {
+          const roleFromText = extractRoleFromText(text)
+          if (roleFromText) {
+            cleanedData.currentRole = roleFromText
+            console.log("✅ Current role corrected from text analysis:", cleanedData.currentRole)
+          }
+        }
+
+        // Improve experience if not found
+        if (!cleanedData.totalExperience || cleanedData.totalExperience === "Not specified") {
+          const expFromText = extractExperienceFromText(text)
+          if (expFromText) {
+            cleanedData.totalExperience = expFromText
+            console.log("✅ Experience corrected from text analysis:", cleanedData.totalExperience)
+          }
+        }
+        
+        // Map to ComprehensiveCandidateData format with CORRECT field mapping
         const candidateData: ComprehensiveCandidateData = {
-          name: parsedData.name || "Unknown Name",
-          email: parsedData.email || "",
-          phone: parsedData.phone || "",
-          dateOfBirth: "",
-          gender: "",
-          maritalStatus: "",
-          currentRole: parsedData.currentRole || "Not specified",
-          desiredRole: "",
-          currentCompany: parsedData.currentCompany || "",
-          location: parsedData.location || "Not specified",
-          preferredLocation: "",
-          totalExperience: parsedData.totalExperience || "Not specified",
-          currentSalary: "",
-          expectedSalary: "",
-          noticePeriod: "",
-          highestQualification: parsedData.highestQualification || "",
-          degree: parsedData.degree || "",
-          specialization: "",
-          university: parsedData.university || "",
-          educationYear: parsedData.educationYear || "",
-          educationPercentage: "",
-          additionalQualifications: "",
-          technicalSkills: Array.isArray(parsedData.technicalSkills) ? parsedData.technicalSkills : [],
-          softSkills: Array.isArray(parsedData.softSkills) ? parsedData.softSkills : [],
-          languagesKnown: Array.isArray(parsedData.languagesKnown) ? parsedData.languagesKnown : [],
-          certifications: Array.isArray(parsedData.certifications) ? parsedData.certifications : [],
-          previousCompanies: Array.isArray(parsedData.previousCompanies) ? parsedData.previousCompanies : [],
-          jobTitles: [],
-          workDuration: [],
-          keyAchievements: Array.isArray(parsedData.keyAchievements) ? parsedData.keyAchievements : [],
-          workExperience: [],
-          education: [],
-          projects: Array.isArray(parsedData.projects) ? parsedData.projects : [],
-          awards: [],
-          publications: [],
-          references: [],
-          linkedinProfile: "",
-          portfolioUrl: "",
-          githubProfile: "",
-          summary: parsedData.summary || "",
-          resumeText: text,
-          fileName: file.name,
-          driveFileId: "",
-          driveFileUrl: "",
-          status: "new",
-          tags: [],
-          rating: undefined,
-          notes: "",
-          uploadedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          lastContacted: "",
-          interviewStatus: "not-scheduled",
-          feedback: "",
+          // Basic Information - Columns A-G
+          name: cleanedData.name || "Unknown Name",                    // Column B: Name
+          email: cleanedData.email || "",                              // Column C: Email
+          phone: cleanedData.phone || "",                              // Column D: Phone
+          dateOfBirth: "",                                             // Column E: Date of Birth
+          gender: "",                                                  // Column F: Gender
+          maritalStatus: "",                                           // Column G: Marital Status
+          
+          // Professional Information - Columns H-P
+          currentRole: cleanedData.currentRole || "Not specified",     // Column H: Current Role
+          desiredRole: "",                                             // Column I: Desired Role
+          currentCompany: cleanedData.currentCompany || "",            // Column J: Current Company
+          location: cleanedData.location || "Not specified",          // Column K: Location
+          preferredLocation: "",                                       // Column L: Preferred Location
+          totalExperience: cleanedData.totalExperience || "Not specified", // Column M: Total Experience
+          currentSalary: "",                                           // Column N: Current Salary
+          expectedSalary: "",                                          // Column O: Expected Salary
+          noticePeriod: "",                                            // Column P: Notice Period
+          
+          // Education Details - Columns Q-V
+          highestQualification: cleanedData.highestQualification || "", // Column Q: Highest Qualification
+          degree: cleanedData.degree || "",                            // Column R: Degree
+          specialization: "",                                          // Column S: Specialization
+          university: cleanedData.university || "",                    // Column T: University/College
+          educationYear: cleanedData.educationYear || "",              // Column U: Education Year
+          educationPercentage: "",                                     // Column V: Education Percentage/CGPA
+          additionalQualifications: "",                                // Column W: Additional Qualifications
+          
+          // Skills & Expertise - Columns X-AA
+          technicalSkills: cleanedData.technicalSkills,                // Column X: Technical Skills
+          softSkills: cleanedData.softSkills,                         // Column Y: Soft Skills
+          languagesKnown: cleanedData.languagesKnown,                  // Column Z: Languages Known
+          certifications: cleanedData.certifications,                  // Column AA: Certifications
+          
+          // Work Experience - Columns AB-AE
+          previousCompanies: cleanedData.previousCompanies,            // Column AB: Previous Companies
+          jobTitles: [],                                               // Column AC: Job Titles
+          workDuration: [],                                            // Column AD: Work Duration
+          keyAchievements: cleanedData.keyAchievements,                // Column AE: Key Achievements
+          workExperience: [],                                          // Column AF: Work Experience Details
+          education: [],                                               // Column AG: Education Details
+          
+          // Additional Information - Columns AH-AM
+          projects: cleanedData.projects,                              // Column AH: Projects
+          awards: [],                                                  // Column AI: Awards
+          publications: [],                                            // Column AJ: Publications
+          references: [],                                              // Column AK: References
+          linkedinProfile: "",                                         // Column AL: LinkedIn Profile
+          portfolioUrl: "",                                            // Column AM: Portfolio URL
+          githubProfile: "",                                           // Column AN: GitHub Profile
+          summary: cleanedData.summary || "",                          // Column AO: Summary/Objective
+          
+          // File Information - Columns AP-AT
+          resumeText: text,                                            // Column AP: Resume Text
+          fileName: file.name,                                         // Column AQ: File Name
+          driveFileId: "",                                             // Column AR: Drive File ID
+          driveFileUrl: "",                                            // Column AS: Drive File URL
+          
+          // System Fields - Columns AT-BB
+          status: "new" as const,                                     // Column AT: Status
+          tags: [],                                                    // Column AU: Tags
+          rating: undefined,                                           // Column AV: Rating
+          notes: "",                                                   // Column AW: Notes
+          uploadedAt: new Date().toISOString(),                        // Column AX: Uploaded At
+          updatedAt: new Date().toISOString(),                         // Column AY: Updated At
+          lastContacted: "",                                           // Column AZ: Last Contacted
+          interviewStatus: "not-scheduled" as const,                   // Column BA: Interview Status
+          feedback: "",                                                // Column BB: Feedback
         }
 
         console.log("✅ Gemini parsing completed successfully")
+        console.log("Final parsed data:", {
+          name: candidateData.name,
+          email: candidateData.email,
+          phone: candidateData.phone,
+          currentRole: candidateData.currentRole,
+          currentCompany: candidateData.currentCompany,
+          location: candidateData.location,
+          totalExperience: candidateData.totalExperience,
+          technicalSkills: candidateData.technicalSkills.length,
+          softSkills: candidateData.softSkills.length
+        })
+        
         return candidateData
 
       } catch (error) {
-        console.log(`Gemini model ${model} failed:`, error)
+        console.log(`⚠️ Gemini model ${modelName} failed:`, error)
         lastError = error
         continue
       }
@@ -339,200 +511,154 @@ function categorizeSkills(skills: string[]): { technicalSkills: string[], softSk
 
 // Enhanced name extraction function
 function extractNameFromText(text: string): string {
+  const lines = text.split('\n')
+  
+  for (const line of lines) {
+    const trimmedLine = line.trim()
+    
+    // Skip empty lines and common headers
+    if (!trimmedLine || 
+        trimmedLine.toLowerCase().includes('resume') ||
+        trimmedLine.toLowerCase().includes('cv') ||
+        trimmedLine.toLowerCase().includes('curriculum vitae') ||
+        trimmedLine.toLowerCase().includes('phone') ||
+        trimmedLine.toLowerCase().includes('email') ||
+        trimmedLine.toLowerCase().includes('address')) {
+      continue
+    }
+    
+    // Look for name patterns with more flexibility
+    const namePattern = /^[A-Z][a-zA-Z\s\.\-']{2,50}$/
+    if (namePattern.test(trimmedLine) && trimmedLine.split(' ').length >= 2 && trimmedLine.split(' ').length <= 4) {
+      return trimmedLine
+    }
+  }
+  
+  return "Unknown Name"
+}
+
+// Function to extract the actual person's name from resume text
+function extractActualPersonName(text: string): string | null {
+  if (!text) return null
+  
   const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0)
   
-  // Look for name patterns in the first few lines
+  // Look for name patterns in the first few lines (resume headers)
   for (let i = 0; i < Math.min(15, lines.length); i++) {
     const line = lines[i]
     
-    // Skip common resume headers and contact info
+    // Skip common resume headers and non-name content
     if (line.toLowerCase().includes('resume') || 
         line.toLowerCase().includes('curriculum') || 
         line.toLowerCase().includes('vitae') ||
         line.toLowerCase().includes('cv') ||
-        line.toLowerCase().includes('phone') ||
-        line.toLowerCase().includes('email') ||
-        line.toLowerCase().includes('address') ||
-        line.toLowerCase().includes('mobile') ||
-        line.toLowerCase().includes('contact') ||
-        line.toLowerCase().includes('roll') ||
-        line.toLowerCase().includes('bachelor') ||
-        line.toLowerCase().includes('technology') ||
-        line.toLowerCase().includes('engineering') ||
-        line.toLowerCase().includes('university') ||
-        line.toLowerCase().includes('college') ||
-        line.toLowerCase().includes('institute') ||
-        line.toLowerCase().includes('school') ||
         line.includes('@') ||
         line.match(/^\d/) ||
-        line.match(/^[A-Z\s]{0,3}$/) || // Skip very short all-caps lines
-        line.match(/^\d{4}$/) || // Skip years
-        line.match(/^\d{2}$/)) { // Skip short numbers
+        line.toLowerCase().includes('phone') ||
+        line.toLowerCase().includes('mobile') ||
+        line.toLowerCase().includes('email') ||
+        line.toLowerCase().includes('location') ||
+        line.toLowerCase().includes('address') ||
+        line.toLowerCase().includes('skills') ||
+        line.toLowerCase().includes('experience') ||
+        line.toLowerCase().includes('education') ||
+        line.toLowerCase().includes('projects') ||
+        line.toLowerCase().includes('achievements')) {
       continue
     }
     
-    // Look for name patterns (2-4 words, no special characters except spaces and dots)
-    const namePattern = /^[A-Z][a-z]+(\s[A-Z][a-z]+){1,3}$/
-    if (namePattern.test(line) && line.length > 3 && line.length < 50) {
-      return line
-    }
-    
-    // Look for name with middle initial
-    const nameWithInitial = /^[A-Z][a-z]+\s[A-Z]\.\s[A-Z][a-z]+$/
-    if (nameWithInitial.test(line)) {
-      return line
-    }
-    
-    // Look for name in ALL CAPS (common in resumes)
-    const allCapsName = /^[A-Z\s]{3,40}$/
-    if (allCapsName.test(line) && !line.includes('@') && !line.match(/\d/) && line.split(' ').length >= 2) {
-      return line
-    }
-    
-    // Look for name with some flexibility (allows for some special characters)
-    const flexibleNamePattern = /^[A-Z][a-zA-Z\s\.\-']{2,50}$/
-    if (flexibleNamePattern.test(line) && line.split(' ').length >= 2 && line.split(' ').length <= 4) {
-      return line
-    }
-    
-    // Look for name with numbers (some resumes have names with years)
-    const nameWithNumbers = /^[A-Z][a-zA-Z\s\.\-']{2,50}\s\d{4}$/
-    if (nameWithNumbers.test(line)) {
-      return line.replace(/\s\d{4}$/, '').trim()
+    // Look for name patterns (2-4 words, starts with capital, no special chars)
+    const namePattern = /^[A-Z][a-zA-Z\s]{2,40}$/
+    if (namePattern.test(line) && line.split(' ').length >= 2 && line.split(' ').length <= 4) {
+      // Additional validation: should not contain common non-name words
+      const lowerLine = line.toLowerCase()
+      const nonNameWords = ['railway', 'infrastructure', 'projects', 'tech', 'company', 'ltd', 'pvt', 'inc']
+      if (!nonNameWords.some(word => lowerLine.includes(word))) {
+        return line
+      }
     }
   }
   
-  // If no name found in first lines, try to find any line that looks like a name
+  // If no name found in headers, try to find it near contact information
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     
-    // Skip lines that are clearly not names
-    if (line.length < 3 || line.length > 50 || 
-        line.toLowerCase().includes('resume') || 
-        line.toLowerCase().includes('curriculum') || 
-        line.toLowerCase().includes('vitae') ||
-        line.toLowerCase().includes('cv') ||
-        line.toLowerCase().includes('phone') ||
-        line.toLowerCase().includes('email') ||
-        line.toLowerCase().includes('address') ||
-        line.toLowerCase().includes('mobile') ||
-        line.toLowerCase().includes('contact') ||
-        line.toLowerCase().includes('roll') ||
-        line.toLowerCase().includes('bachelor') ||
-        line.toLowerCase().includes('technology') ||
-        line.toLowerCase().includes('engineering') ||
-        line.toLowerCase().includes('university') ||
-        line.toLowerCase().includes('college') ||
-        line.toLowerCase().includes('institute') ||
-        line.toLowerCase().includes('school') ||
-        line.includes('@') ||
-        line.match(/^\d/) ||
-        line.match(/^[A-Z\s]{0,3}$/)) {
-      continue
-    }
-    
-    // Look for any line that starts with capital letter and has reasonable length
-    if (/^[A-Z][a-zA-Z\s\.\-']{2,50}$/.test(line) && line.split(' ').length >= 2 && line.split(' ').length <= 5) {
-      return line
+    // Look for contact info patterns
+    if (line.includes('@') || line.match(/\+?\d/) || line.toLowerCase().includes('phone')) {
+      // Check lines above and below for name
+      for (let j = Math.max(0, i - 2); j <= Math.min(lines.length - 1, i + 2); j++) {
+        const checkLine = lines[j].trim()
+        if (checkLine.length > 3 && checkLine.length < 50) {
+          const namePattern = /^[A-Z][a-zA-Z\s]{2,40}$/
+          if (namePattern.test(checkLine) && checkLine.split(' ').length >= 2 && checkLine.split(' ').length <= 4) {
+            const lowerCheckLine = checkLine.toLowerCase()
+            const nonNameWords = ['railway', 'infrastructure', 'projects', 'tech', 'company', 'ltd', 'pvt', 'inc']
+            if (!nonNameWords.some(word => lowerCheckLine.includes(word))) {
+              return checkLine
+            }
+          }
+        }
+      }
     }
   }
   
-  return ""
+  return null
 }
 
-// Parse resume using Affinda API
-async function parseResumeWithAffinda(file: File): Promise<ComprehensiveCandidateData> {
-  try {
-    console.log("Using Affinda API for parsing...")
-    
-    const text = await extractTextFromFile(file)
-    if (!text || text.length < 50) {
-      throw new Error("Insufficient text extracted from file")
+// Enhanced location extraction function
+function extractLocationFromText(text: string): string {
+  const locationPatterns = [
+    /(?:from|at|in|based in|located in)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/gi,
+    /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*[A-Z]{2}/g,
+    /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+[A-Z]{2}/g,
+    /(?:address|location):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/gi,
+  ]
+  
+  for (const pattern of locationPatterns) {
+    const match = text.match(pattern)
+    if (match && match[1] && match[1].trim().length > 2) {
+      return match[1].trim()
     }
-
-    const response = await fetch("https://api.affinda.com/v3/documents/", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.AFFINDA_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        file: text,
-        fileName: file.name,
-        fileType: "resume",
-      }),
-    })
-
-    if (!response.ok) {
-      throw new Error(`Affinda API error: ${response.statusText}`)
-    }
-
-    const data = await response.json()
-    
-    // Map Affinda response to ComprehensiveCandidateData format
-    const result: ComprehensiveCandidateData = {
-      name: data.name || "Unknown Name",
-      email: data.email || "",
-      phone: data.phone || "",
-      dateOfBirth: "",
-      gender: "",
-      maritalStatus: "",
-      currentRole: data.currentRole || "Not specified",
-      desiredRole: "",
-      currentCompany: data.currentCompany || "",
-      location: data.location || "Not specified",
-      preferredLocation: "",
-      totalExperience: data.totalExperience || "Not specified",
-      currentSalary: "",
-      expectedSalary: "",
-      noticePeriod: "",
-      highestQualification: data.highestQualification || "",
-      degree: data.degree || "",
-      specialization: "",
-      university: data.university || "",
-      educationYear: data.educationYear || "",
-      educationPercentage: "",
-      additionalQualifications: "",
-      technicalSkills: Array.isArray(data.technicalSkills) ? data.technicalSkills : [],
-      softSkills: Array.isArray(data.softSkills) ? data.softSkills : [],
-      languagesKnown: Array.isArray(data.languagesKnown) ? data.languagesKnown : [],
-      certifications: Array.isArray(data.certifications) ? data.certifications : [],
-      previousCompanies: Array.isArray(data.previousCompanies) ? data.previousCompanies : [],
-      jobTitles: [],
-      workDuration: [],
-      keyAchievements: Array.isArray(data.keyAchievements) ? data.keyAchievements : [],
-      workExperience: [],
-      education: [],
-      projects: Array.isArray(data.projects) ? data.projects : [],
-      awards: [],
-      publications: [],
-      references: [],
-      linkedinProfile: "",
-      portfolioUrl: "",
-      githubProfile: "",
-      summary: data.summary || "",
-      resumeText: text,
-      fileName: file.name,
-      driveFileId: "",
-      driveFileUrl: "",
-      status: "new",
-      tags: [],
-      rating: undefined,
-      notes: "",
-      uploadedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      lastContacted: "",
-      interviewStatus: "not-scheduled",
-      feedback: "",
-    }
-
-    console.log("✅ Affinda parsing completed successfully")
-    return result
-
-  } catch (error) {
-    console.error("❌ Affinda parsing failed:", error)
-    throw error
   }
+  
+  return "Not specified"
+}
+
+// Enhanced role extraction function
+function extractRoleFromText(text: string): string {
+  const rolePatterns = [
+    /(?:currently|presently|working as|employed as)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/gi,
+    /(?:position|role|title):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/gi,
+    /(?:job|work|employment):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/gi,
+  ]
+  
+  for (const pattern of rolePatterns) {
+    const match = text.match(pattern)
+    if (match && match[1] && match[1].trim().length > 3) {
+      return match[1].trim()
+    }
+  }
+  
+  return "Not specified"
+}
+
+// Enhanced experience extraction function
+function extractExperienceFromText(text: string): string {
+  const expPatterns = [
+    /(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\s*(?:of\s+)?experience/gi,
+    /experience[:\-]?\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)/gi,
+    /(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\s*in\s+[A-Za-z\s]+/gi,
+    /(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\s*work/gi,
+  ]
+  
+  for (const pattern of expPatterns) {
+    const match = text.match(pattern)
+    if (match && match[1]) {
+      return `${match[1]} years`
+    }
+  }
+  
+  return "Not specified"
 }
 
 // Helper function to extract string values from Affinda objects
@@ -938,27 +1064,7 @@ function extractSkillsFromText(text: string) {
                  lowerSkill.includes('relationship') ||
                  lowerSkill.includes('multi') ||
                  lowerSkill.includes('adaptability') ||
-                 lowerSkill.includes('flexibility') ||
-                 lowerSkill.includes('creativity') ||
-                 lowerSkill.includes('innovation') ||
-                 lowerSkill.includes('critical') ||
-                 lowerSkill.includes('analytical') ||
-                 lowerSkill.includes('decision') ||
-                 lowerSkill.includes('strategic') ||
-                 lowerSkill.includes('mentoring') ||
-                 lowerSkill.includes('coaching') ||
-                 lowerSkill.includes('supervision') ||
-                 lowerSkill.includes('negotiation') ||
-                 lowerSkill.includes('presentation') ||
-                 lowerSkill.includes('interpersonal') ||
-                 lowerSkill.includes('collaboration') ||
-                 lowerSkill.includes('stakeholder') ||
-                 lowerSkill.includes('attention') ||
-                 lowerSkill.includes('quality') ||
-                 lowerSkill.includes('results') ||
-                 lowerSkill.includes('self') ||
-                 lowerSkill.includes('initiative') ||
-                 lowerSkill.includes('reliability')) {
+                 lowerSkill.includes('flexibility')) {
           if (softSkills.length < 8) {
             softSkills.push(skill)
           }
@@ -1186,54 +1292,103 @@ async function parseResumeBasic(file: File) {
     // Enhanced name extraction - look for actual person names, not section headers
     let name = extractNameFromText(text) || ""
     
-    // If the enhanced method didn't work, try to find the actual person name
+    // If the enhanced method didn't work, try the new actual person name extraction
     if (!name || name === "Unknown" || name.toLowerCase().includes("skills") || name.toLowerCase().includes("resume")) {
-      console.log("Enhanced name extraction failed, trying pattern-based extraction...")
+      console.log("Enhanced name extraction failed, trying actual person name extraction...")
       
-      // Look for patterns like "DEEPAK KUMAR" (all caps names)
-      const allCapsNameMatch = text.match(/([A-Z]{2,}\s+[A-Z]{2,})/g)
-      if (allCapsNameMatch && allCapsNameMatch.length > 0) {
-        // Filter out common non-name patterns
-        const validNames = allCapsNameMatch.filter(n => 
-          !n.toLowerCase().includes("resume") && 
-          !n.toLowerCase().includes("curriculum") && 
-          !n.toLowerCase().includes("vitae") &&
-          !n.toLowerCase().includes("skills") &&
-          !n.toLowerCase().includes("experience") &&
-          !n.toLowerCase().includes("education") &&
-          n.split(' ').length >= 2 &&
-          n.split(' ').length <= 4
-        )
-        if (validNames.length > 0) {
-          name = validNames[0]
-          console.log("Found name from all-caps pattern:", name)
+      const actualName = extractActualPersonName(text)
+      if (actualName) {
+        name = actualName
+        console.log("✅ Found actual person name:", name)
+      } else {
+        console.log("Actual person name extraction failed, trying pattern-based extraction...")
+        
+        // First, try to find name in the first few lines (most resumes have name at top)
+        const lines = text.split('\n').slice(0, 10)
+        for (const line of lines) {
+          const trimmedLine = line.trim()
+          // Look for lines that look like names (2-4 words, proper case, no special chars)
+          if (trimmedLine.length > 3 && trimmedLine.length < 50 &&
+              /^[A-Z][a-z]+(\s+[A-Z][a-z]+)+$/.test(trimmedLine) &&
+              !trimmedLine.toLowerCase().includes('resume') &&
+              !trimmedLine.toLowerCase().includes('curriculum') &&
+              !trimmedLine.toLowerCase().includes('vitae') &&
+              !trimmedLine.toLowerCase().includes('skills') &&
+              !trimmedLine.toLowerCase().includes('experience') &&
+              !trimmedLine.toLowerCase().includes('education') &&
+              !trimmedLine.toLowerCase().includes('phone') &&
+              !trimmedLine.toLowerCase().includes('email') &&
+              !trimmedLine.toLowerCase().includes('@') &&
+              !trimmedLine.toLowerCase().includes('+91') &&
+              !trimmedLine.toLowerCase().includes('github') &&
+              !trimmedLine.toLowerCase().includes('linkedin')) {
+            name = trimmedLine
+            console.log("Found name in first lines:", name)
+            break
+          }
         }
-      }
-      
-      // If still no name, try to find it near contact information
-      if (!name || name === "Unknown") {
-        const phoneMatch = text.match(/(?:phone|mobile|tel)[:\s]*(\+?\d[\d\s\-\(\)]+)/i)
-        if (phoneMatch) {
-          // Look for name above or below phone number
-          const lines = text.split('\n')
-          const phoneLineIndex = lines.findIndex(line => line.toLowerCase().includes('phone') || line.toLowerCase().includes('mobile'))
-          if (phoneLineIndex > 0) {
-            // Check lines above phone for name
-            for (let i = phoneLineIndex - 1; i >= Math.max(0, phoneLineIndex - 3); i--) {
-              const line = lines[i].trim()
-              if (line.length > 3 && line.length < 50 && 
-                  !line.toLowerCase().includes('@') && 
-                  !line.toLowerCase().includes('phone') &&
-                  !line.toLowerCase().includes('mobile') &&
-                  !line.toLowerCase().includes('email') &&
-                  !line.toLowerCase().includes('location') &&
-                  !line.toLowerCase().includes('address') &&
-                  !line.toLowerCase().includes('experience') &&
-                  !line.toLowerCase().includes('education') &&
-                  !line.toLowerCase().includes('skills')) {
-                name = line
-                console.log("Found name near phone:", name)
-                break
+        
+        // If still no name, look for patterns like "DEEPAK KUMAR" (all caps names)
+        if (!name || name === "Unknown") {
+          const allCapsNameMatch = text.match(/([A-Z]{2,}\s+[A-Z]{2,})/g)
+          if (allCapsNameMatch && allCapsNameMatch.length > 0) {
+            // Filter out common non-name patterns
+            const validNames = allCapsNameMatch.filter(n => 
+              !n.toLowerCase().includes("resume") && 
+              !n.toLowerCase().includes("curriculum") && 
+              !n.toLowerCase().includes("vitae") &&
+              !n.toLowerCase().includes("skills") &&
+              !n.toLowerCase().includes("experience") &&
+              !n.toLowerCase().includes("education") &&
+              !n.toLowerCase().includes("phone") &&
+              !n.toLowerCase().includes("email") &&
+              !n.toLowerCase().includes("github") &&
+              !n.toLowerCase().includes("linkedin") &&
+              n.split(' ').length >= 2 &&
+              n.split(' ').length <= 4
+            )
+            if (validNames.length > 0) {
+              name = validNames[0]
+              console.log("Found name from all-caps pattern:", name)
+            }
+          }
+        }
+        
+        // If still no name, try to find it near contact information
+        if (!name || name === "Unknown") {
+          // Look for specific name patterns like "Bipul Sikder"
+          const specificNameMatch = text.match(/(?:Name|Full Name)[:\s]*([A-Z][a-z]+\s+[A-Z][a-z]+)/i)
+          if (specificNameMatch && specificNameMatch[1]) {
+            name = specificNameMatch[1].trim()
+            console.log("Found name from specific pattern:", name)
+          }
+          
+          // If still no name, try to find it near phone number
+          if (!name || name === "Unknown") {
+            const phoneMatch = text.match(/(?:phone|mobile|tel)[:\s]*(\+?\d[\d\s\-\(\)]+)/i)
+            if (phoneMatch) {
+              // Look for name above or below phone number
+              const lines = text.split('\n')
+              const phoneLineIndex = lines.findIndex(line => line.toLowerCase().includes('phone') || line.toLowerCase().includes('mobile'))
+              if (phoneLineIndex > 0) {
+                // Check lines above phone for name
+                for (let i = phoneLineIndex - 1; i >= Math.max(0, phoneLineIndex - 3); i--) {
+                  const line = lines[i].trim()
+                  if (line.length > 3 && line.length < 50 && 
+                      !line.toLowerCase().includes('@') && 
+                      !line.toLowerCase().includes('phone') &&
+                      !line.toLowerCase().includes('mobile') &&
+                      !line.toLowerCase().includes('email') &&
+                      !line.toLowerCase().includes('location') &&
+                      !line.toLowerCase().includes('address') &&
+                      !line.toLowerCase().includes('experience') &&
+                      !line.toLowerCase().includes('education') &&
+                      !line.toLowerCase().includes('skills')) {
+                    name = line
+                    console.log("Found name near phone:", name)
+                    break
+                  }
+                }
               }
             }
           }
@@ -1243,9 +1398,47 @@ async function parseResumeBasic(file: File) {
     
     // Final fallback: use filename if still no name found
     if (!name || name === "Unknown" || name.trim() === "" || name.toLowerCase().includes("skills")) {
-      const fileName = file.name.replace(/\.[^/.]+$/, "")
-      name = fileName.replace(/[_-]/g, " ").replace(/\b\w/g, (l) => l.toUpperCase()).replace(/\d+/g, "").trim()
-      console.log("Using filename as name:", name)
+      // Last resort: look for any name-like pattern in the text
+      const nameLikePatterns = [
+        /([A-Z][a-z]+\s+[A-Z][a-z]+)/g,
+        /([A-Z][a-z]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+)/g
+      ]
+      
+      for (const pattern of nameLikePatterns) {
+        const matches = text.match(pattern)
+        if (matches && matches.length > 0) {
+          // Filter out common non-name patterns
+          const potentialNames = matches.filter(match => 
+            match.length > 3 && match.length < 50 &&
+            !match.toLowerCase().includes('resume') &&
+            !match.toLowerCase().includes('curriculum') &&
+            !match.toLowerCase().includes('vitae') &&
+            !match.toLowerCase().includes('skills') &&
+            !match.toLowerCase().includes('experience') &&
+            !match.toLowerCase().includes('education') &&
+            !match.toLowerCase().includes('phone') &&
+            !match.toLowerCase().includes('email') &&
+            !match.toLowerCase().includes('github') &&
+            !match.toLowerCase().includes('linkedin') &&
+            !match.toLowerCase().includes('railway') &&
+            !match.toLowerCase().includes('infrastructure') &&
+            !match.toLowerCase().includes('projects')
+          )
+          
+          if (potentialNames.length > 0) {
+            name = potentialNames[0]
+            console.log("Found name from fallback pattern:", name)
+            break
+          }
+        }
+      }
+      
+      // If still no name, use filename
+      if (!name || name === "Unknown" || name.trim() === "" || name.toLowerCase().includes("skills")) {
+        const fileName = file.name.replace(/\.[^/.]+$/, "")
+        name = fileName.replace(/[_-]/g, " ").replace(/\b\w/g, (l) => l.toUpperCase()).replace(/\d+/g, "").trim()
+        console.log("Using filename as name:", name)
+      }
     }
 
     // Enhanced email extraction
@@ -1382,61 +1575,150 @@ async function parseResumeBasic(file: File) {
       }
     }
 
-    // Create the final parsed data object with proper field mapping
+    // Create the final parsed data object with CORRECT field mapping to match Google Sheets columns
     const parsedData = {
-      name: name || "Unknown Name",
-      email: email || "",
-      phone: phone || "",
-      dateOfBirth: "",
-      gender: "",
-      maritalStatus: "",
-      currentRole: currentRole || "Not specified",
-      desiredRole: "",
-      currentCompany: currentCompany || "",
-      location: location || "Not specified",
-      preferredLocation: "",
-      totalExperience: totalExperience || "Not specified",
-      currentSalary: "",
-      expectedSalary: "",
-      noticePeriod: "",
-      highestQualification: educationSection.highestQualification || "",
-      degree: educationSection.degree || "",
-      specialization: educationSection.specialization || "",
-      university: educationSection.university || "",
-      educationYear: educationSection.year || "",
-      educationPercentage: educationSection.percentage || "",
-      additionalQualifications: "",
-      technicalSkills: technicalSkills,
-      softSkills: softSkills,
-      languagesKnown: extractLanguages(text),
-      certifications: extractCertifications(text),
-      previousCompanies: workExperience.map(exp => exp.company).filter(Boolean),
-      jobTitles: workExperience.map(exp => exp.role).filter(Boolean),
-      workDuration: workExperience.map(exp => exp.duration).filter(Boolean),
-      keyAchievements: extractAchievements(text),
-      workExperience: workExperience,
-      education: educationSection.education,
-      projects: extractProjects(text),
-      awards: [],
-      publications: [],
-      references: [],
-      linkedinProfile: "",
-      portfolioUrl: "",
-      githubProfile: "",
-      summary: extractSummary(text),
-      resumeText: text,
-      fileName: file.name,
-      driveFileId: "",
-      driveFileUrl: "",
-      status: "new" as const,
-      tags: [],
-      rating: undefined,
-      notes: "",
-      uploadedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      lastContacted: "",
-      interviewStatus: "not-scheduled" as const,
-      feedback: "",
+      // Basic Information - Columns A-G
+      name: name || "Unknown Name",                                    // Column B: Name
+      email: email || "",                                              // Column C: Email
+      phone: phone || "",                                              // Column D: Phone
+      dateOfBirth: "",                                                 // Column E: Date of Birth
+      gender: "",                                                      // Column F: Gender
+      maritalStatus: "",                                               // Column G: Marital Status
+      
+      // Professional Information - Columns H-P
+      currentRole: currentRole || "Not specified",                     // Column H: Current Role
+      desiredRole: "",                                                 // Column I: Desired Role
+      currentCompany: currentCompany || "",                            // Column J: Current Company
+      location: location || "Not specified",                          // Column K: Location
+      preferredLocation: "",                                           // Column L: Preferred Location
+      totalExperience: totalExperience || "Not specified",             // Column M: Total Experience
+      currentSalary: "",                                               // Column N: Current Salary
+      expectedSalary: "",                                              // Column O: Expected Salary
+      noticePeriod: "",                                                // Column P: Notice Period
+      
+      // Education Details - Columns Q-V
+      highestQualification: educationSection.highestQualification || "", // Column Q: Highest Qualification
+      degree: educationSection.degree || "",                            // Column R: Degree
+      specialization: educationSection.specialization || "",            // Column S: Specialization
+      university: educationSection.university || "",                    // Column T: University/College
+      educationYear: educationSection.year || "",                       // Column U: Education Year
+      educationPercentage: educationSection.percentage || "",           // Column V: Education Percentage/CGPA
+      additionalQualifications: "",                                     // Column W: Additional Qualifications
+      
+      // Skills & Expertise - Columns X-AA
+      technicalSkills: technicalSkills,                                // Column X: Technical Skills
+      softSkills: softSkills,                                          // Column Y: Soft Skills
+      languagesKnown: extractLanguages(text),                          // Column Z: Languages Known
+      certifications: extractCertifications(text),                      // Column AA: Certifications
+      
+      // Work Experience - Columns AB-AE
+      previousCompanies: workExperience.map(exp => exp.company).filter(Boolean), // Column AB: Previous Companies
+      jobTitles: workExperience.map(exp => exp.role).filter(Boolean),           // Column AC: Job Titles
+      workDuration: workExperience.map(exp => exp.duration).filter(Boolean),    // Column AD: Work Duration
+      keyAchievements: extractAchievements(text),                               // Column AE: Key Achievements
+      workExperience: workExperience,                                           // Column AF: Work Experience Details
+      education: educationSection.education,                                    // Column AG: Education Details
+      
+      // Additional Information - Columns AH-AM
+      projects: extractProjects(text),                                 // Column AH: Projects
+      awards: [],                                                       // Column AI: Awards
+      publications: [],                                                 // Column AJ: Publications
+      references: [],                                                   // Column AK: References
+      linkedinProfile: "",                                              // Column AL: LinkedIn Profile
+      portfolioUrl: "",                                                 // Column AM: Portfolio URL
+      githubProfile: "",                                                // Column AN: GitHub Profile
+      summary: extractSummary(text),                                    // Column AO: Summary/Objective
+      
+      // File Information - Columns AP-AT
+      resumeText: text,                                                 // Column AP: Resume Text
+      fileName: file.name,                                              // Column AQ: File Name
+      driveFileId: "",                                                  // Column AR: Drive File ID
+      driveFileUrl: "",                                                 // Column AS: Drive File URL
+      
+                // System Fields - Columns AT-BB
+          status: "new" as const,                                          // Column AT: Status
+          tags: [],                                                         // Column AU: Tags
+          rating: undefined,                                                // Column AV: Rating
+          notes: "",                                                        // Column AW: Notes
+          uploadedAt: new Date().toISOString(),                             // Column AX: Uploaded At
+          updatedAt: new Date().toISOString(),                              // Column AY: Updated At
+          lastContacted: "",                                                // Column AZ: Last Contacted
+          interviewStatus: "not-scheduled" as const,                        // Column BA: Interview Status
+          feedback: "",                                                     // Column BB: Feedback
+    }
+
+    // Enhanced field validation and correction
+    console.log("🔍 Validating parsed data fields...")
+    
+    // Ensure critical fields have meaningful values
+    if (parsedData.name === "Unknown Name" || parsedData.name.trim().length < 2) {
+      // Try to extract name from other patterns
+      const namePatterns = [
+        /(?:^|\n)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?:\s*[-|]\s*|$)/,
+        /(?:^|\n)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?:\s*[A-Z][a-z]+)/,
+      ]
+      
+      for (const pattern of namePatterns) {
+        const match = text.match(pattern)
+        if (match && match[1] && match[1].trim().length > 2) {
+          parsedData.name = match[1].trim()
+          console.log("✅ Name corrected from pattern:", parsedData.name)
+          break
+        }
+      }
+    }
+
+    // Improve location extraction if not found
+    if (!parsedData.location || parsedData.location === "Not specified") {
+      const locationPatterns = [
+        /(?:from|at|in|based in|located in)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/gi,
+        /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*[A-Z]{2}/g,
+        /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+[A-Z]{2}/g,
+      ]
+      
+      for (const pattern of locationPatterns) {
+        const match = text.match(pattern)
+        if (match && match[1] && match[1].trim().length > 2) {
+          parsedData.location = match[1].trim()
+          console.log("✅ Location corrected from pattern:", parsedData.location)
+          break
+        }
+      }
+    }
+
+    // Improve current role extraction
+    if (!parsedData.currentRole || parsedData.currentRole === "Not specified") {
+      const rolePatterns = [
+        /(?:currently|presently|working as|employed as)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/gi,
+        /(?:position|role|title):\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/gi,
+      ]
+      
+      for (const pattern of rolePatterns) {
+        const match = text.match(pattern)
+        if (match && match[1] && match[1].trim().length > 3) {
+          parsedData.currentRole = match[1].trim()
+          console.log("✅ Current role corrected from pattern:", parsedData.currentRole)
+          break
+        }
+      }
+    }
+
+    // Improve experience extraction
+    if (!parsedData.totalExperience || parsedData.totalExperience === "Not specified") {
+      const expPatterns = [
+        /(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\s*(?:of\s+)?experience/gi,
+        /experience[:\-]?\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)/gi,
+        /(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\s*in\s+[A-Za-z\s]+/gi,
+      ]
+      
+      for (const pattern of expPatterns) {
+        const match = text.match(pattern)
+        if (match && match[1]) {
+          parsedData.totalExperience = `${match[1]} years`
+          console.log("✅ Experience corrected from pattern:", parsedData.totalExperience)
+          break
+        }
+      }
     }
 
     console.log("✅ Enhanced basic parsing completed:", parsedData.name)
@@ -1469,29 +1751,68 @@ async function parseResumeBasic(file: File) {
 
 async function extractTextFromFile(file: File): Promise<string> {
   try {
-    console.log(`Extracting text from ${file.type} file...`)
+    console.log(`🔄 Extracting text from ${file.type} file: ${file.name}`)
+    console.log(`📁 File details: name=${file.name}, type=${file.type}, size=${file.size} bytes`)
 
-    if (file.type === "text/plain") {
+    // Enhanced file type detection
+    const fileType = file.type.toLowerCase()
+    const fileName = file.name.toLowerCase()
+    
+    // Check for text files
+    if (fileType === "text/plain" || fileName.endsWith('.txt')) {
+      console.log("📝 Processing as text file...")
       const text = await file.text()
       console.log("✅ Text file extracted successfully")
       return text
-    } else if (file.type === "application/pdf") {
+    }
+    
+    // Check for PDF files
+    if (fileType === "application/pdf" || fileName.endsWith('.pdf')) {
+      console.log("📄 Processing as PDF file...")
       const arrayBuffer = await file.arrayBuffer()
       const text = await extractPDFText(arrayBuffer)
       console.log("✅ PDF text extracted")
       return text
-    } else if (file.type.includes("word") || file.type.includes("document") || file.type.includes("docx") || file.type.includes("doc")) {
-      console.log(`Processing DOCX file: ${file.name} (${file.type})`)
+    }
+    
+    // Check for Word documents (DOCX, DOC)
+    if (fileType.includes("word") || 
+        fileType.includes("document") || 
+        fileType.includes("docx") || 
+        fileType.includes("doc") ||
+        fileName.endsWith('.docx') ||
+        fileName.endsWith('.doc')) {
+      console.log(`📝 Processing Word document: ${file.name} (${file.type})`)
       const arrayBuffer = await file.arrayBuffer()
       const text = await extractDocxText(arrayBuffer)
-      console.log("✅ DOCX text extracted")
+      console.log("✅ Word document text extracted")
       return text
-    } else {
-      throw new Error(`Unsupported file type: ${file.type}`)
     }
+    
+    // If file type is unknown but filename suggests a supported format, try to process it
+    if (fileName.endsWith('.docx') || fileName.endsWith('.doc') || fileName.endsWith('.pdf')) {
+      console.log(`⚠️ Unknown file type but filename suggests supported format: ${fileName}`)
+      console.log(`🔄 Attempting to process as: ${fileName.endsWith('.docx') ? 'DOCX' : fileName.endsWith('.doc') ? 'DOC' : 'PDF'}`)
+      
+      const arrayBuffer = await file.arrayBuffer()
+      
+      if (fileName.endsWith('.docx') || fileName.endsWith('.doc')) {
+        return await extractDocxText(arrayBuffer)
+      } else if (fileName.endsWith('.pdf')) {
+        return await extractPDFText(arrayBuffer)
+      }
+    }
+    
+    // If we get here, the file type is not supported
+    throw new Error(`Unsupported file type: ${file.type}. Supported types: PDF, DOCX, DOC, TXT`)
+    
   } catch (error) {
     console.error("❌ Text extraction error:", error)
-    return `Error extracting text from ${file.name}: ${error}`
+    console.error(`File: ${file.name}, Type: ${file.type}, Size: ${file.size}`)
+    
+    // Return a more helpful error message
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    return `Error extracting text from ${file.name}: ${errorMessage}`
   }
 }
 
@@ -1499,25 +1820,27 @@ async function extractPDFText(arrayBuffer: ArrayBuffer): Promise<string> {
   try {
     // Use pdf-parse for robust PDF text extraction
     const data = await pdfParse(Buffer.from(arrayBuffer))
-    return data.text
+    return sanitizeExtractedText(data.text)
   } catch (error) {
     console.error("PDF extraction error with pdf-parse:", error)
     // Fallback to basic text extraction if pdf-parse fails
     const uint8Array = new Uint8Array(arrayBuffer)
     const text = new TextDecoder("latin1").decode(uint8Array)
-    const readableText = text
-      .replace(/[^\x20-\x7E\n]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
+    const readableText = sanitizeExtractedText(text)
     return readableText.length > 50 ? readableText : `PDF processing error: ${error}`
   }
 }
 
 async function extractDocxText(arrayBuffer: ArrayBuffer): Promise<string> {
   try {
-    console.log("Attempting DOCX extraction with mammoth.js...")
+    console.log("🔄 Starting DOCX text extraction...")
     console.log("ArrayBuffer size:", arrayBuffer.byteLength)
     console.log("ArrayBuffer constructor:", arrayBuffer.constructor.name)
+    
+    // Environment checks
+    console.log("Environment check - Node.js:", typeof process !== 'undefined' && process.versions && process.versions.node)
+    console.log("Environment check - Browser:", typeof window !== 'undefined')
+    console.log("Environment check - Global:", typeof global !== 'undefined')
     
     // Validate ArrayBuffer
     if (!arrayBuffer || arrayBuffer.byteLength === 0) {
@@ -1531,262 +1854,227 @@ async function extractDocxText(arrayBuffer: ArrayBuffer): Promise<string> {
     
     // DOCX files start with PK (50 4B) - ZIP file format
     if (!signature.startsWith('504b')) {
-      throw new Error("File does not appear to be a valid DOCX file (missing ZIP signature)")
+      console.warn("⚠️ File signature doesn't match DOCX format, but attempting extraction anyway...")
+      // Don't throw error immediately, try to extract anyway
     }
     
     // Check if mammoth is available
-    if (!mammoth || typeof mammoth.extractRawText !== 'function') {
-      throw new Error("Mammoth.js not properly loaded")
+    if (!mammoth) {
+      console.error("❌ Mammoth.js library not available")
+      console.error("Mammoth import result:", mammoth)
+      throw new Error("Mammoth.js library not available")
     }
     
-    console.log("Mammoth.js is available, calling extractRawText...")
+    if (typeof mammoth.extractRawText !== 'function') {
+      console.error("❌ Mammoth.js extractRawText function not available")
+      console.error("Available mammoth properties:", Object.getOwnPropertyNames(mammoth))
+      console.error("Mammoth type:", typeof mammoth)
+      throw new Error("Mammoth.js extractRawText function not available")
+    }
     
-    // Try different approaches for mammoth.js
+    console.log("✅ Mammoth.js is available, attempting text extraction...")
+    console.log("Mammoth object:", mammoth)
+    console.log("extractRawText function:", mammoth.extractRawText)
+    
+    // Try multiple approaches for mammoth.js
     let result = null
+    let lastError = null
     
+    // Approach 1: Direct arrayBuffer
     try {
-      // First attempt: standard approach
+      console.log("🔄 Attempt 1: Direct arrayBuffer...")
       result = await mammoth.extractRawText({ arrayBuffer })
-    } catch (mammothError) {
-      console.log("Standard mammoth approach failed, trying alternative...")
+      console.log("✅ Direct arrayBuffer approach successful")
+    } catch (error1) {
+      console.log("❌ Direct arrayBuffer failed:", error1 instanceof Error ? error1.message : error1)
+      lastError = error1
       
-      // Second attempt: try with Buffer conversion
+      // Approach 2: Buffer conversion
       try {
+        console.log("🔄 Attempt 2: Buffer conversion...")
         const buffer = Buffer.from(arrayBuffer)
         result = await mammoth.extractRawText({ arrayBuffer: buffer as any })
-      } catch (bufferError) {
-        console.log("Buffer conversion approach also failed")
-        throw mammothError // Throw the original error
+        console.log("✅ Buffer conversion approach successful")
+      } catch (error2) {
+        console.log("❌ Buffer conversion failed:", error2 instanceof Error ? error2.message : error2)
+        lastError = error2
+        
+        // Approach 3: Uint8Array conversion
+        try {
+          console.log("🔄 Attempt 3: Uint8Array conversion...")
+          result = await mammoth.extractRawText({ arrayBuffer: uint8Array as any })
+          console.log("✅ Uint8Array conversion approach successful")
+        } catch (error3) {
+          console.log("❌ Uint8Array conversion failed:", error3 instanceof Error ? error3.message : error3)
+          lastError = error3
+        }
       }
     }
     
-    console.log("Mammoth result:", result)
-    
-    if (result && result.value) {
-      console.log("✅ DOCX text extracted successfully with mammoth")
+    if (result && result.value && result.value.trim().length > 0) {
+      console.log("✅ DOCX text extracted successfully!")
       console.log("Extracted text length:", result.value.length)
-      return result.value
+      console.log("First 200 characters:", result.value.substring(0, 200))
+      return sanitizeExtractedText(result.value)
     } else {
-      throw new Error("No text content found in DOCX")
+      console.warn("⚠️ Mammoth extraction returned empty or invalid result")
+      throw new Error("No text content found in DOCX file")
     }
-  } catch (error) {
-    console.error("DOCX extraction error with mammoth:", error)
-    console.error("Error name:", error instanceof Error ? error.name : "Unknown")
-    console.error("Error message:", error instanceof Error ? error.message : "Unknown")
     
-    // Fallback to basic text extraction if mammoth fails
-    console.log("Using fallback DOCX text extraction...")
+  } catch (error) {
+    console.error("❌ All mammoth.js approaches failed:", error)
+
+    // Robust fallback using ZIP parsing to read document.xml
+    console.log("🔄 Attempting ZIP-based DOCX text extraction fallback...")
     try {
-      const uint8Array = new Uint8Array(arrayBuffer)
-      const text = new TextDecoder().decode(uint8Array)
-      const cleanText = text
-        .replace(/<[^>]*>/g, " ")
-        .replace(/[^\x20-\x7E\n]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-      
-      if (cleanText.length > 50) {
-        console.log("✅ DOCX text extracted with fallback method")
-        console.log("Fallback text length:", cleanText.length)
-        return cleanText
-      } else {
-        throw new Error("Fallback extraction produced insufficient text")
+      const zip = await JSZip.loadAsync(arrayBuffer)
+      const xmlFiles = [
+        "word/document.xml",
+        "word/header1.xml",
+        "word/header2.xml",
+        "word/footer1.xml",
+        "word/footer2.xml"
+      ]
+      let combined = ""
+      for (const path of xmlFiles) {
+        if (zip.file(path)) {
+          const xmlContent = await zip.file(path)!.async("string")
+          // Extract all text nodes from w:t tags
+          const matches = xmlContent.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/gi) || []
+          const textNodes = matches
+            .map((m) => m.replace(/<w:t[^>]*>/i, "").replace(/<\/w:t>/i, ""))
+            .join(" ")
+          combined += " " + textNodes
+        }
       }
+      const cleaned = sanitizeExtractedText(combined)
+      if (cleaned && cleaned.length > 50) {
+        console.log("✅ ZIP-based DOCX text extraction successful!")
+        console.log("Fallback text length:", cleaned.length)
+        console.log("First 200 characters:", cleaned.substring(0, 200))
+        return cleaned
+      }
+      throw new Error("ZIP fallback produced insufficient text")
     } catch (fallbackError) {
-      console.error("Fallback DOCX extraction also failed:", fallbackError)
-      return `DOCX processing error: ${error}. Fallback error: ${fallbackError}`
+      console.error("❌ ZIP-based DOCX extraction failed:", fallbackError)
+      const details = {
+        originalError: error instanceof Error ? error.message : String(error),
+        fallbackError: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+      }
+      throw new Error(`DOCX processing completely failed. Details: ${JSON.stringify(details)}`)
     }
   }
+}
+
+function sanitizeExtractedText(input: string): string {
+  if (!input) return ""
+  // Replace non-printable/binary, collapse whitespace, trim
+  let text = input
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  // Guard against extremely long content causing Sheets 50k cell limit.
+  const MAX_LEN = 30000
+  if (text.length > MAX_LEN) {
+    text = text.slice(0, MAX_LEN)
+  }
+  return text
 }
 
 function getFallbackParsedData(file: File) {
   const fileName = file.name.replace(/\.[^/.]+$/, "")
 
   return {
-    name: fileName.replace(/[_-]/g, " ").replace(/\b\w/g, (l) => l.toUpperCase()).replace(/\d+/g, "").trim(),
-    email: "",
-    phone: "",
-    dateOfBirth: "",
-    gender: "",
-    currentRole: "Not specified",
-    desiredRole: "",
-    currentCompany: "",
-    location: "Not specified",
-    preferredLocation: "",
-    totalExperience: "Not specified",
-    currentSalary: "",
-    expectedSalary: "",
-    noticePeriod: "",
-    highestQualification: "",
-    degree: "",
-    specialization: "",
-    university: "",
-    educationYear: "",
-    educationPercentage: "",
-    technicalSkills: [],
-    softSkills: [],
-    languagesKnown: [],
-    certifications: [],
-    previousCompanies: [],
-    keyAchievements: [],
-    projects: [],
-    linkedinProfile: "",
-    summary: "",
-    resumeText: `Resume file: ${file.name} (${file.size} bytes, ${file.type})`,
-    fileName: file.name, // Add fileName to the fallback data
+    // Basic Information - Columns A-G
+    name: fileName.replace(/[_-]/g, " ").replace(/\b\w/g, (l) => l.toUpperCase()).replace(/\d+/g, "").trim(), // Column B: Name
+    email: "",                                                                                                   // Column C: Email
+    phone: "",                                                                                                   // Column D: Phone
+    dateOfBirth: "",                                                                                            // Column E: Date of Birth
+    gender: "",                                                                                                  // Column F: Gender
+    maritalStatus: "",                                                                                           // Column G: Marital Status
+    
+    // Professional Information - Columns H-P
+    currentRole: "Not specified",                                                                                // Column H: Current Role
+    desiredRole: "",                                                                                             // Column I: Desired Role
+    currentCompany: "",                                                                                          // Column J: Current Company
+    location: "Not specified",                                                                                   // Column K: Location
+    preferredLocation: "",                                                                                       // Column L: Preferred Location
+    totalExperience: "Not specified",                                                                            // Column M: Total Experience
+    currentSalary: "",                                                                                           // Column N: Current Salary
+    expectedSalary: "",                                                                                          // Column O: Expected Salary
+    noticePeriod: "",                                                                                            // Column P: Notice Period
+    
+    // Education Details - Columns Q-V
+    highestQualification: "",                                                                                    // Column Q: Highest Qualification
+    degree: "",                                                                                                  // Column R: Degree
+    specialization: "",                                                                                          // Column S: Specialization
+    university: "",                                                                                              // Column T: University/College
+    educationYear: "",                                                                                           // Column U: Education Year
+    educationPercentage: "",                                                                                     // Column V: Education Percentage/CGPA
+    additionalQualifications: "",                                                                                // Column W: Additional Qualifications
+    
+    // Skills & Expertise - Columns X-AA
+    technicalSkills: [],                                                                                         // Column X: Technical Skills
+    softSkills: [],                                                                                              // Column Y: Soft Skills
+    languagesKnown: [],                                                                                          // Column Z: Languages Known
+    certifications: [],                                                                                          // Column AA: Certifications
+    
+    // Work Experience - Columns AB-AE
+    previousCompanies: [],                                                                                       // Column AB: Previous Companies
+    jobTitles: [],                                                                                               // Column AC: Job Titles
+    workDuration: [],                                                                                            // Column AD: Work Duration
+    keyAchievements: [],                                                                                         // Column AE: Key Achievements
+    workExperience: [],                                                                                          // Column AF: Work Experience Details
+    education: [],                                                                                               // Column AG: Education Details
+    
+    // Additional Information - Columns AH-AM
+    projects: [],                                                                                                // Column AH: Projects
+    awards: [],                                                                                                  // Column AI: Awards
+    publications: [],                                                                                            // Column AJ: Publications
+    references: [],                                                                                              // Column AK: References
+    linkedinProfile: "",                                                                                         // Column AL: LinkedIn Profile
+    portfolioUrl: "",                                                                                            // Column AM: Portfolio URL
+    githubProfile: "",                                                                                           // Column AN: GitHub Profile
+    summary: "",                                                                                                 // Column AO: Summary/Objective
+    
+    // File Information - Columns AP-AT
+    resumeText: `Resume file: ${file.name} (${file.size} bytes, ${file.type})`,                                   // Column AP: Resume Text
+    fileName: file.name,                                                                                         // Column AQ: File Name
+    driveFileId: "",                                                                                             // Column AR: Drive File ID
+    driveFileUrl: "",                                                                                            // Column AS: Drive File URL
+    
+    // System Fields - Columns AT-BB
+    status: "new" as const,                                                                                     // Column AT: Status
+    tags: [],                                                                                                    // Column AU: Tags
+    rating: undefined,                                                                                           // Column AV: Rating
+    notes: "",                                                                                                   // Column AW: Notes
+    uploadedAt: new Date().toISOString(),                                                                        // Column AX: Uploaded At
+    updatedAt: new Date().toISOString(),                                                                         // Column AY: Updated At
+    lastContacted: "",                                                                                           // Column AZ: Last Contacted
+    interviewStatus: "not-scheduled" as const,                                                                   // Column BA: Interview Status
+    feedback: "",                                                                                                // Column BB: Feedback
   }
+}
+
+// Helper functions for data cleaning and extraction
+function cleanString(value: any): string {
+  if (!value || typeof value !== 'string') return ""
+  const cleaned = value.trim()
+  if (cleaned.toLowerCase() === 'unknown' || cleaned.toLowerCase() === 'not specified' || cleaned.toLowerCase() === 'n/a') {
+    return ""
+  }
+  return cleaned
+}
+
+function cleanArray(value: any): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(item => item && typeof item === 'string' && item.trim().length > 0)
+    .map(item => item.trim())
+    .filter(item => item.toLowerCase() !== 'unknown' && item.toLowerCase() !== 'not specified' && item.toLowerCase() !== 'n/a')
 }
 
 // Parse resume using OpenAI GPT-3.5-turbo (Free tier alternative)
-async function parseResumeWithOpenAI(file: File): Promise<ComprehensiveCandidateData> {
-  try {
-    console.log("Using OpenAI GPT-3.5-turbo for parsing...")
-    
-    const text = await extractTextFromFile(file)
-    if (!text || text.length < 50) {
-      throw new Error("Insufficient text extracted from file")
-    }
 
-    // Limit text to avoid token limits (GPT-3.5-turbo has 4096 token limit)
-    const limitedText = text.substring(0, 3000)
-    
-    const prompt = `Please parse this resume and extract the following information in JSON format:
 
-{
-  "name": "Full name of the person",
-  "email": "Email address if found",
-  "phone": "Phone number if found",
-  "currentRole": "Current job title/role",
-  "currentCompany": "Current company name",
-  "location": "City, State, Country",
-  "totalExperience": "Total years of experience (e.g., '5 years')",
-  "highestQualification": "Highest education level (e.g., 'Master's', 'Bachelor's')",
-  "degree": "Specific degree (e.g., 'B.Tech Computer Science')",
-  "university": "University/College name",
-  "educationYear": "Year of graduation",
-  "technicalSkills": ["skill1", "skill2", "skill3"],
-  "softSkills": ["skill1", "skill2", "skill3"],
-  "languagesKnown": ["language1", "language2"],
-  "certifications": ["cert1", "cert2"],
-  "previousCompanies": ["company1", "company2"],
-  "keyAchievements": ["achievement1", "achievement2"],
-  "projects": ["project1", "project2"],
-  "summary": "Professional summary or objective"
-}
 
-Resume text:
-${limitedText}
-
-Please ensure the JSON is valid and all fields are properly extracted. If a field is not found, use an empty string or empty array as appropriate.`
-
-    // Check if OpenAI API key is available
-    const openaiApiKey = process.env.OPENAI_API_KEY
-    if (!openaiApiKey) {
-      throw new Error("OpenAI API key not configured")
-    }
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openaiApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-3.5-turbo',
-        messages: [
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        temperature: 0.1,
-        max_tokens: 1000,
-        timeout: 30000
-      })
-    })
-
-    if (!response.ok) {
-      const errorData = await response.json()
-      throw new Error(`OpenAI API error: ${errorData.error?.message || response.statusText}`)
-    }
-
-    const data = await response.json()
-    const content = data.choices[0]?.message?.content
-
-    if (!content) {
-      throw new Error("No content received from OpenAI")
-    }
-
-    // Extract JSON from the response
-    const jsonMatch = content.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      throw new Error("No valid JSON found in OpenAI response")
-    }
-
-    const parsedData = JSON.parse(jsonMatch[0])
-    
-    // Map to ComprehensiveCandidateData format
-    const result: ComprehensiveCandidateData = {
-      name: parsedData.name || "Unknown Name",
-      email: parsedData.email || "",
-      phone: parsedData.phone || "",
-      dateOfBirth: "",
-      gender: "",
-      maritalStatus: "",
-      currentRole: parsedData.currentRole || "Not specified",
-      desiredRole: "",
-      currentCompany: parsedData.currentCompany || "",
-      location: parsedData.location || "Not specified",
-      preferredLocation: "",
-      totalExperience: parsedData.totalExperience || "Not specified",
-      currentSalary: "",
-      expectedSalary: "",
-      noticePeriod: "",
-      highestQualification: parsedData.highestQualification || "",
-      degree: parsedData.degree || "",
-      specialization: "",
-      university: parsedData.university || "",
-      educationYear: parsedData.educationYear || "",
-      educationPercentage: "",
-      additionalQualifications: "",
-      technicalSkills: Array.isArray(parsedData.technicalSkills) ? parsedData.technicalSkills : [],
-      softSkills: Array.isArray(parsedData.softSkills) ? parsedData.softSkills : [],
-      languagesKnown: Array.isArray(parsedData.languagesKnown) ? parsedData.languagesKnown : [],
-      certifications: Array.isArray(parsedData.certifications) ? parsedData.certifications : [],
-      previousCompanies: Array.isArray(parsedData.previousCompanies) ? parsedData.previousCompanies : [],
-      jobTitles: [],
-      workDuration: [],
-      keyAchievements: Array.isArray(parsedData.keyAchievements) ? parsedData.keyAchievements : [],
-      workExperience: [],
-      education: [],
-      projects: Array.isArray(parsedData.projects) ? parsedData.projects : [],
-      awards: [],
-      publications: [],
-      references: [],
-      linkedinProfile: "",
-      portfolioUrl: "",
-      githubProfile: "",
-      summary: parsedData.summary || "",
-      resumeText: text,
-      fileName: file.name,
-      driveFileId: "",
-      driveFileUrl: "",
-      status: "new",
-      tags: [],
-      rating: undefined,
-      notes: "",
-      uploadedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      lastContacted: "",
-      interviewStatus: "not-scheduled",
-      feedback: "",
-    }
-
-    console.log("✅ OpenAI parsing completed successfully")
-    return result
-
-  } catch (error) {
-    console.error("❌ OpenAI parsing failed:", error)
-    throw error
-  }
-}

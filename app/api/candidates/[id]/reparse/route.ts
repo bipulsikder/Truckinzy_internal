@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+export const runtime = "nodejs"
 import { reparseCandidate, getCandidateById } from "@/lib/google-sheets"
 
 export async function POST(

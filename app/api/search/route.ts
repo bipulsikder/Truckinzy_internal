@@ -2,6 +2,11 @@ import { type NextRequest, NextResponse } from "next/server"
 import { searchCandidates } from "@/lib/ai-utils"
 import { getAllCandidates } from "@/lib/google-sheets"
 
+// Simple in-memory cache to reduce repeated full-sheet reads during rapid searches
+let candidatesCache: any[] | null = null
+let candidatesCacheAt = 0
+const CANDIDATES_CACHE_MS = 60_000
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -13,8 +18,14 @@ export async function POST(request: NextRequest) {
     console.log("Job Description:", jobDescription ? "Provided" : "Not provided")
     console.log("Filters:", filters)
 
-    // Get all candidates from Google Sheets
-    const allCandidates = await getAllCandidates()
+    // Get all candidates from Google Sheets (with short cache)
+    const now = Date.now()
+    if (!candidatesCache || now - candidatesCacheAt > CANDIDATES_CACHE_MS) {
+      const fresh = await getAllCandidates()
+      candidatesCache = fresh
+      candidatesCacheAt = now
+    }
+    const allCandidates = candidatesCache
     console.log("Total candidates:", allCandidates.length)
 
     // Transform data to ensure consistency
@@ -173,7 +184,7 @@ async function minimalManualSearch(filters: any, candidates: any[]): Promise<any
         candidate.resumeText || "",
         candidate.summary || "",
       ]
-        .join(" ")
+        .join(" \n ")
         .toLowerCase()
 
       return filters.keywords.some((keyword: string) => searchableText.includes(keyword.toLowerCase()))
@@ -245,81 +256,88 @@ async function minimalManualSearch(filters: any, candidates: any[]): Promise<any
 
   // Enhanced relevance scoring for better results
   const resultsWithScores = filteredCandidates.map((candidate) => {
-    let relevanceScore = 0.3 // Base score
-    const matchingKeywords: string[] = []
+    let score = 0
+    const matches: string[] = []
 
-    // Keyword matching with higher weight
+    const fieldWeights: Record<string, number> = {
+      name: 0.25,
+      currentRole: 0.3,
+      desiredRole: 0.2,
+      currentCompany: 0.15,
+      technicalSkills: 0.25,
+      softSkills: 0.1,
+      resumeText: 0.15,
+      summary: 0.1,
+    }
+
+    const addMatch = (kw: string, weight: number) => {
+      score += weight
+      matches.push(kw)
+    }
+
+    // Keyword scoring by field with weights and occurrence boost
     if (filters.keywords && filters.keywords.length > 0) {
-      const searchableText = [
-        candidate.name || "",
-        candidate.currentRole || "",
-        candidate.desiredRole || "",
-        candidate.currentCompany || "",
-        ...(candidate.technicalSkills || []),
-        ...(candidate.softSkills || []),
-      ]
-        .join(" ")
-        .toLowerCase()
+      const klist = filters.keywords.map((k: string) => (k || "").toLowerCase()).filter(Boolean)
+      for (const kw of klist) {
+        const re = new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi")
 
-      let keywordMatches = 0
-      filters.keywords.forEach((keyword: string) => {
-        const keywordLower = keyword.toLowerCase()
-        if (searchableText.includes(keywordLower)) {
-          keywordMatches++
-          matchingKeywords.push(keyword)
+        const name = (candidate.name || "").toLowerCase()
+        if (re.test(name)) addMatch(kw, fieldWeights.name)
 
-          // Higher score for role matches
-          if ((candidate.currentRole || "").toLowerCase().includes(keywordLower)) {
-            relevanceScore += 0.25
-          } else if (
-            (candidate.technicalSkills || []).some((skill: string) => skill.toLowerCase().includes(keywordLower))
-          ) {
-            relevanceScore += 0.15
-          } else {
-            relevanceScore += 0.1
-          }
-        }
-      })
+        const role = (candidate.currentRole || "").toLowerCase()
+        if (re.test(role)) addMatch(kw, fieldWeights.currentRole)
 
-      // Bonus for multiple keyword matches
-      if (keywordMatches > 1) {
-        relevanceScore += 0.1 * (keywordMatches - 1)
+        const desired = (candidate.desiredRole || "").toLowerCase()
+        if (re.test(desired)) addMatch(kw, fieldWeights.desiredRole)
+
+        const company = (candidate.currentCompany || "").toLowerCase()
+        if (re.test(company)) addMatch(kw, fieldWeights.currentCompany)
+
+        const techSkills = (candidate.technicalSkills || []).map((s: string) => s.toLowerCase()).join(" ")
+        if (re.test(techSkills)) addMatch(kw, fieldWeights.technicalSkills)
+
+        const softSkills = (candidate.softSkills || []).map((s: string) => s.toLowerCase()).join(" ")
+        if (re.test(softSkills)) addMatch(kw, fieldWeights.softSkills)
+
+        const resume = (candidate.resumeText || "").toLowerCase()
+        const resumeMatches = resume.match(re)?.length || 0
+        if (resumeMatches > 0) addMatch(kw, fieldWeights.resumeText * Math.min(1, 0.25 * resumeMatches))
+
+        const summary = (candidate.summary || "").toLowerCase()
+        if (re.test(summary)) addMatch(kw, fieldWeights.summary)
       }
     }
 
-    // Location match bonus
+    // Location bonus
     if (filters.location && filters.location.trim()) {
-      const locationQuery = filters.location.toLowerCase()
-      if ((candidate.location || "").toLowerCase().includes(locationQuery)) {
-        relevanceScore += 0.1
-        matchingKeywords.push(filters.location)
+      const loc = filters.location.toLowerCase()
+      if ((candidate.location || "").toLowerCase().includes(loc)) {
+        addMatch(filters.location, 0.15)
       }
     }
 
-    // Experience match bonus
+    // Experience alignment bonus
     if (filters.experienceType !== "any") {
       const exp = Number.parseInt(candidate.totalExperience) || 0
-      if (
-        (filters.experienceType === "freshers" && exp <= 1) ||
-        (filters.experienceType === "experienced" && exp > 1)
-      ) {
-        relevanceScore += 0.05
+      if ((filters.experienceType === "freshers" && exp <= 1) || (filters.experienceType === "experienced" && exp > 1)) {
+        score += 0.05
       }
     }
 
-    // Education match bonus
+    // Education bonus
     if (filters.education && filters.education.trim()) {
-      const candidateEducation = (candidate.highestQualification || "").toLowerCase()
-      const filterEducation = filters.education.toLowerCase()
-      if (candidateEducation.includes(filterEducation)) {
-        relevanceScore += 0.05
-      }
+      const ce = (candidate.highestQualification || "").toLowerCase()
+      const fe = filters.education.toLowerCase()
+      if (ce.includes(fe)) score += 0.05
     }
+
+    // Normalize score to 0..1
+    const normalized = Math.max(0, Math.min(1, score))
 
     return {
       ...candidate,
-      relevanceScore: Math.min(relevanceScore, 1), // Cap at 1.0
-      matchingKeywords: [...new Set(matchingKeywords)], // Remove duplicates
+      relevanceScore: normalized,
+      matchingKeywords: [...new Set(matches)],
     }
   })
 

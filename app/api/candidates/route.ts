@@ -3,9 +3,10 @@ import { getAllCandidates } from "@/lib/google-sheets"
 
 export async function GET(request: NextRequest) {
   try {
-    console.log("=== Fetching All Candidates ===")
+    // console.log("=== Fetching All Candidates ===")
 
     const candidates = await getAllCandidates()
+    // console.log(`📊 Raw candidates from Google Sheets: ${candidates.length}`)
 
     // Transform the data to match the expected format in the frontend
     const transformedCandidates = candidates.map((candidate) => ({
@@ -62,7 +63,9 @@ export async function GET(request: NextRequest) {
       summary: candidate.summary,
     }))
 
-    console.log(`✅ Retrieved ${transformedCandidates.length} candidates`)
+    // console.log(`✅ Retrieved ${transformedCandidates.length} candidates`)
+    // console.log("Sample candidate:", transformedCandidates[0] || "No candidates found")
+    
     return NextResponse.json(transformedCandidates)
   } catch (error) {
     console.error("❌ Failed to fetch candidates:", error)

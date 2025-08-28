@@ -1,5 +1,6 @@
 "use client"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
+import dynamic from "next/dynamic"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
@@ -39,7 +40,9 @@ import {
   ChevronRight,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { CandidatePreviewDialog } from "./candidate-preview-dialog"
+const CandidatePreviewDialogDynamic = dynamic(() => import("./candidate-preview-dialog").then(m => m.CandidatePreviewDialog), {
+  ssr: false,
+})
 
 interface SearchResult {
   _id: string
@@ -74,6 +77,7 @@ interface SearchResult {
   gender?: string
   age?: number
   maritalStatus?: string
+  tags?: string[]
 }
 
 interface MinimalSearchFilters {
@@ -113,7 +117,8 @@ export function SmartSearch() {
   const [hasSearched, setHasSearched] = useState(false)
   const [mounted, setMounted] = useState(false)
   const [selectedCandidate, setSelectedCandidate] = useState<SearchResult | null>(null)
-  const [sortBy, setSortBy] = useState<"relevance" | "experience" | "name">("relevance")
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false)
+  const [sortBy, setSortBy] = useState<"relevance" | "experience" | "name" | "recent">("relevance")
   const [showFilters, setShowFilters] = useState(true)
 
   // AI keyword suggestions
@@ -151,6 +156,12 @@ export function SmartSearch() {
   })
 
   const [openFilters, setOpenFilters] = useState<Record<string, boolean>>({})
+  const [includeKeywordInput, setIncludeKeywordInput] = useState("")
+  const [excludeKeywordInput, setExcludeKeywordInput] = useState("")
+
+  // Client-side pagination
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
 
   const { toast } = useToast()
 
@@ -233,8 +244,8 @@ export function SmartSearch() {
     if (sidebarFilters.salaryRange.min || sidebarFilters.salaryRange.max) {
       filtered = filtered.filter((candidate) => {
         const salary = Math.max(
-          Number.parseFloat(candidate.currentSalary) || 0,
-          Number.parseFloat(candidate.expectedSalary) || 0,
+          Number.parseFloat(candidate.currentSalary || "0") || 0,
+          Number.parseFloat(candidate.expectedSalary || "0") || 0,
         )
         const minSalary = Number.parseFloat(sidebarFilters.salaryRange.min) || 0
         const maxSalary = Number.parseFloat(sidebarFilters.salaryRange.max) || 999
@@ -280,7 +291,8 @@ export function SmartSearch() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ input, context: "logistics" }),
-      })
+        signal: aiAbortRef.current?.signal,
+      } as any)
 
       if (response.ok) {
         const suggestions = await response.json()
@@ -293,11 +305,17 @@ export function SmartSearch() {
     }
   }
 
-  // Debounced AI suggestions
+  // Debounced AI suggestions with abort to reduce lag
+  const aiAbortRef = useRef<AbortController | null>(null)
   useEffect(() => {
     const timer = setTimeout(() => {
+      // Abort previous request if in-flight
+      if (aiAbortRef.current) {
+        aiAbortRef.current.abort()
+      }
+      aiAbortRef.current = new AbortController()
       getAISuggestions(keywordInput)
-    }, 300)
+    }, 500)
 
     return () => clearTimeout(timer)
   }, [keywordInput])
@@ -443,8 +461,34 @@ export function SmartSearch() {
           relevanceScore: typeof result.relevanceScore === "number" ? result.relevanceScore : 0,
           status: result.status || "new",
           uploadedAt: result.uploadedAt || new Date().toISOString(),
+          // Avoid rendering huge resume text in list to reduce lag. Fetch full on preview.
+          resumeText: "",
         }))
       : []
+  }
+
+  const openPreview = async (candidate: SearchResult) => {
+    try {
+      setIsPreviewLoading(true)
+      // Prefer server details, fetch by id if available
+      const id = candidate._id || candidate.id
+      if (id) {
+        const res = await fetch(`/api/candidates/${id}`)
+        if (res.ok) {
+          const full = await res.json()
+          // Merge to preserve relevance/matches if returned object lacks them
+          setSelectedCandidate({ ...candidate, ...full })
+        } else {
+          setSelectedCandidate(candidate)
+        }
+      } else {
+        setSelectedCandidate(candidate)
+      }
+    } catch (e) {
+      setSelectedCandidate(candidate)
+    } finally {
+      setIsPreviewLoading(false)
+    }
   }
 
   const addKeyword = (keyword: string) => {
@@ -481,6 +525,7 @@ export function SmartSearch() {
     setSearchResults([])
     setFilteredResults([])
     setHasSearched(false)
+    setCurrentPage(1)
   }
 
   const updateCandidateStatus = async (candidateId: string, status: string) => {
@@ -534,6 +579,11 @@ export function SmartSearch() {
     switch (sortBy) {
       case "relevance":
         return (b.relevanceScore || 0) - (a.relevanceScore || 0)
+      case "recent":
+        // Sort by upload date (newest first)
+        const dateA = new Date(a.uploadedAt || 0).getTime()
+        const dateB = new Date(b.uploadedAt || 0).getTime()
+        return dateB - dateA
       case "experience":
         return (b.totalExperience || "").localeCompare(a.totalExperience || "")
       case "name":
@@ -542,6 +592,14 @@ export function SmartSearch() {
         return 0
     }
   })
+
+  // Apply pagination
+  const totalResults = sortedResults.length
+  const totalPages = Math.max(1, Math.ceil(totalResults / pageSize))
+  const currentPageSafe = Math.min(Math.max(1, currentPage), totalPages)
+  const startIdx = (currentPageSafe - 1) * pageSize
+  const endIdx = startIdx + pageSize
+  const pagedResults = sortedResults.slice(startIdx, endIdx)
 
   if (!mounted) {
     return (
@@ -573,6 +631,101 @@ export function SmartSearch() {
 
               {showFilters && (
                 <div className="space-y-3">
+                  {/* Specific Keywords */}
+                  <Collapsible
+                    open={openFilters.specificKeywords}
+                    onOpenChange={(open) => setOpenFilters((prev) => ({ ...prev, specificKeywords: open }))}
+                  >
+                    <CollapsibleTrigger className="flex items-center justify-between w-full p-2 hover:bg-gray-50 rounded">
+                      <span className="font-medium">Specific Keywords</span>
+                      <ChevronDown className="h-4 w-4" />
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="p-2 space-y-3">
+                      <div>
+                        <Label className="text-sm">Must include</Label>
+                        <div className="flex gap-2 mt-1">
+                          <Input
+                            placeholder="e.g. GPS, WMS, TMS"
+                            value={includeKeywordInput}
+                            onChange={(e) => setIncludeKeywordInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && includeKeywordInput.trim()) {
+                                const kw = includeKeywordInput.trim()
+                                if (!sidebarFilters.mustHaveKeywords.includes(kw)) {
+                                  setSidebarFilters((prev) => ({ ...prev, mustHaveKeywords: [...prev.mustHaveKeywords, kw] }))
+                                }
+                                setIncludeKeywordInput("")
+                              }
+                            }}
+                          />
+                          <Button
+                            variant="outline"
+                            onClick={() => {
+                              if (includeKeywordInput.trim()) {
+                                const kw = includeKeywordInput.trim()
+                                if (!sidebarFilters.mustHaveKeywords.includes(kw)) {
+                                  setSidebarFilters((prev) => ({ ...prev, mustHaveKeywords: [...prev.mustHaveKeywords, kw] }))
+                                }
+                                setIncludeKeywordInput("")
+                              }
+                            }}
+                          >
+                            Add
+                          </Button>
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {sidebarFilters.mustHaveKeywords.map((kw) => (
+                            <Badge key={kw} variant="secondary" className="text-xs">
+                              {kw}
+                              <X className="h-3 w-3 ml-1 cursor-pointer" onClick={() => setSidebarFilters((prev) => ({ ...prev, mustHaveKeywords: prev.mustHaveKeywords.filter((k) => k !== kw) }))} />
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label className="text-sm">Exclude</Label>
+                        <div className="flex gap-2 mt-1">
+                          <Input
+                            placeholder="e.g. fresher, trainee"
+                            value={excludeKeywordInput}
+                            onChange={(e) => setExcludeKeywordInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && excludeKeywordInput.trim()) {
+                                const kw = excludeKeywordInput.trim()
+                                if (!sidebarFilters.excludeKeywords.includes(kw)) {
+                                  setSidebarFilters((prev) => ({ ...prev, excludeKeywords: [...prev.excludeKeywords, kw] }))
+                                }
+                                setExcludeKeywordInput("")
+                              }
+                            }}
+                          />
+                          <Button
+                            variant="outline"
+                            onClick={() => {
+                              if (excludeKeywordInput.trim()) {
+                                const kw = excludeKeywordInput.trim()
+                                if (!sidebarFilters.excludeKeywords.includes(kw)) {
+                                  setSidebarFilters((prev) => ({ ...prev, excludeKeywords: [...prev.excludeKeywords, kw] }))
+                                }
+                                setExcludeKeywordInput("")
+                              }
+                            }}
+                          >
+                            Add
+                          </Button>
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {sidebarFilters.excludeKeywords.map((kw) => (
+                            <Badge key={kw} variant="secondary" className="text-xs">
+                              {kw}
+                              <X className="h-3 w-3 ml-1 cursor-pointer" onClick={() => setSidebarFilters((prev) => ({ ...prev, excludeKeywords: prev.excludeKeywords.filter((k) => k !== kw) }))} />
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
                   {/* Hide candidates that are */}
                   <Collapsible
                     open={openFilters.hideInactive}
@@ -1306,6 +1459,21 @@ export function SmartSearch() {
                       <option value="relevance">Relevance</option>
                       <option value="experience">Experience</option>
                       <option value="name">Name</option>
+                      <option value="recent">Recent</option>
+                    </select>
+                    {/* Page size */}
+                    <span className="text-sm text-gray-600 ml-4">Per page:</span>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => {
+                        setPageSize(Number(e.target.value))
+                        setCurrentPage(1)
+                      }}
+                      className="text-sm border rounded px-2 py-1"
+                    >
+                      {[10, 20, 30, 50].map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
                     </select>
                   </div>
                 )}
@@ -1338,8 +1506,9 @@ export function SmartSearch() {
                 </CardContent>
               </Card>
             ) : (
-              <div className="grid gap-6">
-                {sortedResults.map((result, index) => (
+              <div>
+                <div className="grid gap-6">
+                {pagedResults.map((result, index) => (
                   <Card
                     key={`${result._id || result.id}-${index}`}
                     className="hover:shadow-lg transition-all duration-300 border-l-4 border-l-blue-500"
@@ -1408,7 +1577,7 @@ export function SmartSearch() {
                           </div>
                         </div>
                         <div className="flex items-center space-x-2">
-                          <Button variant="outline" onClick={() => setSelectedCandidate(result)}>
+                          <Button variant="outline" onClick={() => openPreview(result)}>
                             <Eye className="h-4 w-4 mr-2" />
                             View Details
                           </Button>
@@ -1497,6 +1666,30 @@ export function SmartSearch() {
                     </CardContent>
                   </Card>
                 ))}
+                </div>
+
+                {/* Pagination controls */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between border-t pt-4">
+                    <span className="text-sm text-gray-600">
+                      Page {currentPageSafe} of {totalPages} • Showing {startIdx + 1}-{Math.min(endIdx, totalResults)} of {totalResults}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" disabled={currentPageSafe <= 1} onClick={() => setCurrentPage(1)}>
+                        First
+                      </Button>
+                      <Button variant="outline" size="sm" disabled={currentPageSafe <= 1} onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}>
+                        Prev
+                      </Button>
+                      <Button variant="outline" size="sm" disabled={currentPageSafe >= totalPages} onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}>
+                        Next
+                      </Button>
+                      <Button variant="outline" size="sm" disabled={currentPageSafe >= totalPages} onClick={() => setCurrentPage(totalPages)}>
+                        Last
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1535,8 +1728,13 @@ export function SmartSearch() {
         )}
 
         {/* Candidate Preview Dialog */}
-        <CandidatePreviewDialog
-          candidate={selectedCandidate}
+        <CandidatePreviewDialogDynamic
+          candidate={selectedCandidate ? ({
+            ...selectedCandidate,
+            fileName: selectedCandidate.fileName || "",
+            driveFileUrl: selectedCandidate.driveFileUrl || "",
+            tags: selectedCandidate.tags || [],
+          } as any) : null}
           isOpen={!!selectedCandidate}
           onClose={() => setSelectedCandidate(null)}
           onStatusUpdate={updateCandidateStatus}

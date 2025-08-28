@@ -1,4 +1,5 @@
 import { google } from "googleapis"
+import { checkFileExistsInBlob } from "./vercel-blob-utils"
 
 // Initialize Google APIs
 const auth = new google.auth.GoogleAuth({
@@ -225,6 +226,9 @@ export async function addCandidate(candidateData: Omit<ComprehensiveCandidateDat
       candidateData.jobTitles?.join(", ") || "",
       candidateData.workDuration?.join(", ") || "",
       candidateData.keyAchievements?.join(", ") || "",
+      // Work Experience Details & Education Details
+      Array.isArray(candidateData.workExperience) ? candidateData.workExperience.map(exp => `${exp.role} at ${exp.company}`).join("; ") : "",
+      Array.isArray(candidateData.education) ? candidateData.education.map(edu => `${edu.degree} from ${edu.institution}`).join("; ") : "",
       // Additional Information
       candidateData.projects?.join(", ") || "",
       candidateData.awards?.join(", ") || "",
@@ -251,6 +255,52 @@ export async function addCandidate(candidateData: Omit<ComprehensiveCandidateDat
       candidateData.feedback || "",
     ]
 
+    // Log the row data for debugging
+    console.log("📊 Row data being added to Google Sheets:")
+    console.log(`- ID (col A): ${row[0]}`)
+    console.log(`- Name (col B): ${row[1]}`)
+    console.log(`- Email (col C): ${row[2]}`)
+    console.log(`- Phone (col D): ${row[3]}`)
+    console.log(`- Current Role (col H): ${row[7]}`)
+    console.log(`- Current Company (col J): ${row[9]}`)
+    console.log(`- Location (col K): ${row[10]}`)
+    console.log(`- Total Experience (col M): ${row[12]}`)
+    console.log(`- Education (col Q): ${row[16]}`)
+    console.log(`- University (col T): ${row[19]}`)
+    console.log(`- Education Year (col U): ${row[20]}`)
+    console.log(`- Technical Skills (col X): ${row[23]}`)
+    console.log(`- Soft Skills (col Y): ${row[24]}`)
+    console.log(`- File Name (col AQ): ${row[42]}`)
+    console.log(`- Drive File URL (col AS): ${row[44]}`)
+    console.log(`- Status (col AT): ${row[45]}`)
+    console.log(`- Uploaded At (col AX): ${row[49]}`)
+    console.log(`- Row length: ${row.length} columns`)
+
+    // Validate row data structure
+    if (row.length !== 54) {
+      console.error(`❌ Row data has incorrect length: ${row.length} columns, expected 54 (A-BB)`)
+      console.error("Row data:", row)
+      throw new Error(`Invalid row data structure: expected 54 columns, got ${row.length}`)
+    }
+
+    // Validate critical fields
+    if (!row[1] || String(row[1]).trim() === "") {
+      console.error("❌ Name field is empty or missing")
+      throw new Error("Name field is required")
+    }
+
+    if (!row[7] || String(row[7]).trim() === "") {
+      console.error("❌ Current Role field is empty or missing")
+      throw new Error("Current Role field is required")
+    }
+
+    if (!row[10] || String(row[10]).trim() === "") {
+      console.error("❌ Location field is empty or missing")
+      throw new Error("Location field is required")
+    }
+
+    console.log("✅ Row data validation passed")
+
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
       range: "Sheet1!A:BB",
@@ -268,19 +318,58 @@ export async function addCandidate(candidateData: Omit<ComprehensiveCandidateDat
   }
 }
 
+// Test Google Sheets connectivity
+export async function testGoogleSheetsConnection(): Promise<boolean> {
+  try {
+    console.log("🧪 Testing Google Sheets connection...")
+    
+    if (!SPREADSHEET_ID) {
+      console.error("❌ GOOGLE_SPREADSHEET_ID not set")
+      return false
+    }
+    
+    // Try to get just the headers to test connectivity
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A1:BB1", // Just the header row
+    })
+    
+    console.log("✅ Google Sheets connection successful")
+    console.log("📊 Headers found:", response.data.values?.[0]?.length || 0)
+    
+    return true
+  } catch (error) {
+    console.error("❌ Google Sheets connection failed:", error)
+    return false
+  }
+}
+
 // Get all candidates with comprehensive data
 export async function getAllCandidates(): Promise<ComprehensiveCandidateData[]> {
   try {
+    // console.log("🔍 getAllCandidates: Starting...")
+    // console.log("🔍 getAllCandidates: SPREADSHEET_ID =", SPREADSHEET_ID)
+    
+    if (!SPREADSHEET_ID) {
+      throw new Error("GOOGLE_SPREADSHEET_ID environment variable is not set")
+    }
+    
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
       range: "Sheet1!A2:BB", // Skip header row, include all columns
     })
 
+    // console.log("🔍 getAllCandidates: Google Sheets response:", {
+    //   hasData: !!response.data.values,
+    //   rowCount: response.data.values?.length || 0
+    // })
+
     if (!response.data.values) {
+      // console.log("🔍 getAllCandidates: No data returned from Google Sheets")
       return []
     }
 
-    return response.data.values.map(
+    const candidates = response.data.values.map(
       (row): ComprehensiveCandidateData => ({
         // Basic Information
         id: row[0] || "",
@@ -323,15 +412,15 @@ export async function getAllCandidates(): Promise<ComprehensiveCandidateData[]> 
         awards: row[32] ? row[32].split(", ").filter(Boolean) : [],
         publications: row[33] ? row[33].split(", ").filter(Boolean) : [],
         references: row[34] ? row[34].split(", ").filter(Boolean) : [],
-        linkedinProfile: row[35] || "",
-        portfolioUrl: row[36] || "",
-        githubProfile: row[37] || "",
-        summary: row[38] || "",
+        linkedinProfile: row[37] || "",
+        portfolioUrl: row[38] || "",
+        githubProfile: row[39] || "",
+        summary: row[40] || "",
         // File Information
-        resumeText: row[39] || "",
-        fileName: row[40] || "",
-        driveFileId: row[41] || "",
-        driveFileUrl: row[42] || "",
+        resumeText: row[41] || "",
+        fileName: row[42] || "",
+        driveFileId: row[43] || "",
+        driveFileUrl: row[44] || "",
         // System Fields
         status: (row[45] as any) || "new",
         tags: row[46] ? row[46].split(", ").filter(Boolean) : [],
@@ -344,8 +433,28 @@ export async function getAllCandidates(): Promise<ComprehensiveCandidateData[]> 
         feedback: row[53] || "",
       }),
     )
+
+    // console.log("🔍 getAllCandidates: Processed candidates:", candidates.length)
+    // if (candidates.length > 0) {
+    //   console.log("🔍 getAllCandidates: Sample candidate:", {
+    //     id: candidates[0].id,
+    //     name: candidates[0].name,
+    //     email: candidates[0].email
+    //   })
+    // }
+
+    // Sort candidates by upload date (newest first)
+    const sortedCandidates = candidates.sort((a, b) => {
+      const dateA = new Date(a.uploadedAt || 0).getTime()
+      const dateB = new Date(b.uploadedAt || 0).getTime()
+      return dateB - dateA // Newest first
+    })
+
+    console.log(`🔍 getAllCandidates: Sorted ${sortedCandidates.length} candidates by upload date (newest first)`)
+    
+    return sortedCandidates
   } catch (error) {
-    console.error("❌ Failed to get candidates:", error)
+    console.error("❌ getAllCandidates failed:", error)
     throw error
   }
 }
@@ -415,22 +524,22 @@ export async function searchCandidates(query: string): Promise<ComprehensiveCand
 // Update candidate with comprehensive data - IMPROVED VERSION
 export async function updateCandidate(id: string, updates: Partial<ComprehensiveCandidateData>): Promise<void> {
   try {
-    console.log(`🔍 Searching for candidate with ID: ${id}`)
+    // console.log(`🔍 Searching for candidate with ID: ${id}`)
     const candidates = await getAllCandidates()
-    console.log(`📊 Total candidates found: ${candidates.length}`)
+    // console.log(`📊 Total candidates found: ${candidates.length}`)
 
     // Find candidate by ID (more flexible matching)
     const candidateIndex = candidates.findIndex((c) => {
       const candidateId = c.id || ""
-      console.log(`🔍 Comparing: "${candidateId}" with "${id}"`)
+      // console.log(`🔍 Comparing: "${candidateId}" with "${id}"`)
       return candidateId === id || candidateId.toString() === id.toString()
     })
 
-    console.log(`📍 Candidate index found: ${candidateIndex}`)
+    // console.log(`📍 Candidate index found: ${candidateIndex}`)
 
     if (candidateIndex === -1) {
       console.error(`❌ Candidate not found with ID: ${id}`)
-      console.log("Available candidate IDs:", candidates.map((c) => c.id).slice(0, 10))
+      // console.log("Available candidate IDs:", candidates.map((c) => c.id).slice(0, 10))
       throw new Error(`Candidate not found with ID: ${id}`)
     }
 
@@ -438,7 +547,7 @@ export async function updateCandidate(id: string, updates: Partial<Comprehensive
     const updatedCandidate = { ...candidate, ...updates, updatedAt: new Date().toISOString() }
     const rowNumber = candidateIndex + 2 // +2 because array is 0-indexed and we skip header
 
-    console.log(`📝 Updating row number: ${rowNumber}`)
+    // console.log(`📝 Updating row number: ${rowNumber}`)
 
     // First, let's ensure the headers are correct
     const headerResponse = await sheets.spreadsheets.values.get({
@@ -447,7 +556,7 @@ export async function updateCandidate(id: string, updates: Partial<Comprehensive
     })
 
     const currentHeaders = headerResponse.data.values?.[0] || []
-    console.log("Current headers:", currentHeaders)
+    // console.log("Current headers:", currentHeaders)
 
     // Define the expected column structure
     const expectedColumns = [
@@ -561,6 +670,10 @@ export async function updateCandidate(id: string, updates: Partial<Comprehensive
     console.log("- Education (col 16):", row[16])
     console.log("- Technical Skills (col 23):", row[23])
     console.log("- Soft Skills (col 24):", row[24])
+    console.log("- File Name (col 42):", row[42])
+    console.log("- Drive File URL (col 44):", row[44])
+    console.log("- Status (col 45):", row[45])
+    console.log("- Uploaded At (col 49):", row[49])
 
     // Update the specific row in Google Sheets
     await sheets.spreadsheets.values.update({
@@ -853,15 +966,15 @@ function mapRowToCandidateData(row: any[]): ComprehensiveCandidateData {
     fileName: row[40] || "",
     driveFileId: row[41] || "",
     driveFileUrl: row[42] || "",
-    status: (row[45] as any) || "new",
-    tags: row[46] ? row[46].split(", ").filter(Boolean) : [],
-    rating: row[47] ? parseFloat(row[47]) : undefined,
-    notes: row[48] || "",
-    uploadedAt: row[49] || "",
-    updatedAt: row[50] || "",
-    lastContacted: row[51] || "",
-    interviewStatus: (row[52] as any) || "not-scheduled",
-    feedback: row[53] || "",
+    status: (row[43] as any) || "new",
+    tags: row[44] ? row[44].split(", ").filter(Boolean) : [],
+    rating: row[45] ? parseFloat(row[45]) : undefined,
+    notes: row[46] || "",
+    uploadedAt: row[47] || "",
+    updatedAt: row[48] || "",
+    lastContacted: row[49] || "",
+    interviewStatus: (row[50] as any) || "not-scheduled",
+    feedback: row[51] || "",
   }
 }
 
@@ -1226,26 +1339,83 @@ export async function reparseCandidate(candidateId: string, blobUrl: string, fil
   try {
     console.log(`=== Reparsing Candidate ${candidateId} from original file ===`)
     
+    // Resolve a valid blob URL even if older rows stored only a filename/pathname
+    let resolvedUrl = blobUrl
+    const looksLikeUrl = typeof resolvedUrl === "string" && /^https?:\/\//i.test(resolvedUrl)
+    if (!looksLikeUrl) {
+      console.log("Blob URL is not a valid URL. Attempting to resolve via Vercel Blob...")
+      // Try using driveFileId (often a pathname) first
+      if (blobUrl && typeof blobUrl === "string") {
+        const attempt1 = await checkFileExistsInBlob(blobUrl)
+        if (attempt1.exists && attempt1.url) {
+          resolvedUrl = attempt1.url
+          console.log("Resolved from driveFileId/pathname:", resolvedUrl)
+        }
+      }
+      // Try using provided fileName
+      if (!/^https?:\/\//i.test(resolvedUrl) && fileName) {
+        const attempt2 = await checkFileExistsInBlob(fileName)
+        if (attempt2.exists && attempt2.url) {
+          resolvedUrl = attempt2.url
+          console.log("Resolved from fileName:", resolvedUrl)
+        }
+      }
+      if (!/^https?:\/\//i.test(resolvedUrl)) {
+        throw new Error(`Unable to resolve a valid blob URL for reparsing. Got "${blobUrl}"`) 
+      }
+    }
+
     // Download the original file from blob storage
-    console.log("Downloading original file from blob storage...")
-    const response = await fetch(blobUrl)
+    console.log("Downloading original file from blob storage...", resolvedUrl)
+    const response = await fetch(resolvedUrl)
     
     if (!response.ok) {
       throw new Error(`Failed to download file from blob storage: ${response.status}`)
     }
     
     const blob = await response.blob()
+
+    // Determine a reliable MIME type for the file (blob.type can be empty)
+    const lowerName = (fileName || "").toLowerCase()
+    const inferredType = (() => {
+      if (lowerName.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      if (lowerName.endsWith(".doc")) return "application/msword"
+      if (lowerName.endsWith(".pdf")) return "application/pdf"
+      if (lowerName.endsWith(".txt")) return "text/plain"
+      return "application/octet-stream"
+    })()
+
+    const reliableType = blob.type && blob.type !== "application/octet-stream" ? blob.type : inferredType
+
+    // Convert blob to Buffer for Node.js compatibility
+    const arrayBuffer = await blob.arrayBuffer()
+    const buffer = Buffer.from(arrayBuffer)
     
-    // Create a File object from the blob
-    const file = new File([blob], fileName, { type: blob.type })
     console.log(`✅ Downloaded file: ${fileName} (${blob.size} bytes)`)
     
     // Import the parseResume function dynamically to avoid circular dependencies
     const { parseResume } = await import("./resume-parser")
     
-    // Reparse the resume using the original file
+    // Create a proper mock File object that implements all required methods
+    const mockFile = {
+      name: fileName,
+      type: reliableType,
+      size: blob.size,
+      arrayBuffer: () => Promise.resolve(arrayBuffer),
+      text: () => blob.text(),
+      // Add any other File methods that might be needed
+      slice: (start?: number, end?: number) => {
+        const slicedBuffer = arrayBuffer.slice(start || 0, end || arrayBuffer.byteLength)
+        return {
+          arrayBuffer: () => Promise.resolve(slicedBuffer),
+          text: () => new TextDecoder().decode(slicedBuffer)
+        }
+      }
+    }
+    
+    // Reparse the resume using the mock file object
     console.log("Reparsing resume from original file...")
-    const reparsedData = await parseResume(file)
+    const reparsedData = await parseResume(mockFile as any)
     
     if (!reparsedData || !reparsedData.name || reparsedData.name.toLowerCase() === "unknown") {
       throw new Error("Reparsing failed to extract valid candidate information")

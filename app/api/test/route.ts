@@ -4,7 +4,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai"
 import { generateEmbedding } from "@/lib/ai-utils"
 import { realignSpreadsheetData, cleanupSpreadsheetData } from "@/lib/google-sheets"
 
-export async function GET() {
+export async function GET(request: Request) {
   const results = {
     timestamp: new Date().toISOString(),
     environment: {
@@ -79,35 +79,31 @@ export async function GET() {
     results.embedding = `❌ Failed: ${error instanceof Error ? error.message : "Unknown error"}`
   }
 
-  try {
-    console.log("=== Testing Data Realignment Functions ===")
-    
-    // Test the realignment function
-    console.log("Testing realignSpreadsheetData...")
-    const realignResult = await realignSpreadsheetData()
-    console.log("Realignment result:", realignResult)
-    
-    // Test the cleanup function
-    console.log("Testing cleanupSpreadsheetData...")
-    const cleanupResult = await cleanupSpreadsheetData()
-    console.log("Cleanup result:", cleanupResult)
-    
-    return NextResponse.json({
-      success: true,
-      message: "Data realignment functions tested successfully",
-      realignResult,
-      cleanupResult
-    })
-    
-  } catch (error) {
-    console.error("❌ Test failed:", error)
-    return NextResponse.json(
-      { 
-        error: "Test failed", 
-        details: error instanceof Error ? error.message : "Unknown error" 
-      },
-      { status: 500 }
-    )
+  // Data Realignment & Cleanup: SAFE BY DEFAULT
+  // Run only when explicitly requested: /api/test?fix=true
+  const url = new URL(request.url)
+  const doFix = url.searchParams.get("fix") === "true"
+  if (doFix) {
+    try {
+      console.log("=== Running Data Realignment (on-demand) ===")
+      const realignResult = await realignSpreadsheetData()
+      console.log("Realignment result:", realignResult)
+      results["realignResult"] = realignResult
+    } catch (error) {
+      results["realignResult"] = `❌ Failed: ${error instanceof Error ? error.message : "Unknown error"}`
+    }
+
+    try {
+      console.log("Running Data Cleanup (on-demand) ===")
+      const cleanupResult = await cleanupSpreadsheetData()
+      console.log("Cleanup result:", cleanupResult)
+      results["cleanupResult"] = cleanupResult
+    } catch (error) {
+      results["cleanupResult"] = `❌ Failed: ${error instanceof Error ? error.message : "Unknown error"}`
+    }
+  } else {
+    results["realignResult"] = "skipped (add ?fix=true to run)"
+    results["cleanupResult"] = "skipped (add ?fix=true to run)"
   }
 
   return NextResponse.json(results)

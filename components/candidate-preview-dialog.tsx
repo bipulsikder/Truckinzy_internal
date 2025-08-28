@@ -125,7 +125,7 @@ export function CandidatePreviewDialog({
   const [pendingStatus, setPendingStatus] = useState("")
   const [isEditingNotes, setIsEditingNotes] = useState(false)
   const [notes, setNotes] = useState("")
-  const [rating, setRating] = useState(candidate?.rating || 0)
+  const [rating, setRating] = useState(candidate?.rating || undefined)
   const [isUpdating, setIsUpdating] = useState(false)
   const { toast } = useToast()
 
@@ -133,7 +133,7 @@ export function CandidatePreviewDialog({
   useEffect(() => {
     if (candidate) {
       setNotes(candidate.notes || "")
-      setRating(candidate.rating || 0)
+      setRating(candidate.rating || undefined)
     }
   }, [candidate])
 
@@ -207,6 +207,9 @@ export function CandidatePreviewDialog({
         title: "Success",
         description: "Candidate status updated successfully",
       })
+      // Close the confirmation dialog
+      setShowStatusConfirm(false)
+      setPendingStatus("")
     } catch (error) {
       toast({
         title: "Error",
@@ -215,8 +218,6 @@ export function CandidatePreviewDialog({
       })
     } finally {
       setIsUpdating(false)
-      setShowStatusConfirm(false)
-      setPendingStatus("")
     }
   }
 
@@ -252,6 +253,8 @@ export function CandidatePreviewDialog({
         description: "Rating updated successfully",
       })
     } catch (error) {
+      // Revert rating on error
+      setRating(safeCandidate.rating || undefined)
       toast({
         title: "Error",
         description: "Failed to update rating",
@@ -322,7 +325,7 @@ export function CandidatePreviewDialog({
                       <Star
                         key={star}
                         className={`h-6 w-6 cursor-pointer transition-all duration-200 hover:scale-110 ${
-                          star <= rating ? "text-yellow-400 fill-current" : "text-gray-300 hover:text-yellow-200"
+                          rating && star <= rating ? "text-yellow-400 fill-current" : "text-gray-300 hover:text-yellow-200"
                         }`}
                         onClick={() => handleRatingUpdate(star)}
                       />
@@ -731,8 +734,8 @@ export function CandidatePreviewDialog({
                   </Card>
                 )}
 
-                {/* Key Achievements */}
-                {safeCandidate.keyAchievements && safeCandidate.keyAchievements.length > 0 && (
+                {/* Key Achievements - Hidden as requested */}
+                {/* {safeCandidate.keyAchievements && safeCandidate.keyAchievements.length > 0 && (
                   <Card className="shadow-md">
                     <CardHeader>
                       <CardTitle className="text-2xl flex items-center text-gold-700">
@@ -754,7 +757,7 @@ export function CandidatePreviewDialog({
                       </div>
                     </CardContent>
                   </Card>
-                )}
+                )} */}
               </TabsContent>
 
               <TabsContent value="education" className="space-y-6">

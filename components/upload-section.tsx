@@ -27,7 +27,7 @@ import { useToast } from "@/hooks/use-toast"
 
 interface UploadedFile {
   file: File
-  status: "uploading" | "processing" | "completed" | "error" | "duplicate"
+  status: "uploading" | "processing" | "completed" | "error" | "duplicate" | "parsing-failed"
   progress: number
   result?: any
   error?: string
@@ -35,6 +35,15 @@ interface UploadedFile {
     existingName: string
     existingId: string
     uploadedAt: string
+    reason?: string
+  }
+  parsingError?: {
+    details: string
+    fileName: string
+    fileType: string
+    fileSize: number
+    suggestions: string[]
+    timestamp: string
   }
 }
 
@@ -123,7 +132,7 @@ export function UploadSection() {
 
       if (!response.ok) {
         // Check if it's a duplicate error
-        if (result.isDuplicate) {
+        if (result.isDuplicate || result.error === "Resume already exists") {
           setUploadedFiles((prev) =>
             prev.map((f, i) =>
               i === index
@@ -131,13 +140,49 @@ export function UploadSection() {
                     ...f,
                     status: "duplicate",
                     progress: 100,
-                    duplicateInfo: result.duplicateInfo,
+                    duplicateInfo: result.duplicateInfo || {
+                      existingName: "Unknown",
+                      existingId: "Unknown",
+                      uploadedAt: new Date().toISOString(),
+                      reason: result.error || "Duplicate detected"
+                    },
                   }
                 : f,
             ),
           )
           return
         }
+        
+        // Check if it's a parsing failure
+        if (result.parsingFailed || result.error === "Resume parsing failed") {
+          setUploadedFiles((prev) =>
+            prev.map((f, i) =>
+              i === index
+                ? {
+                    ...f,
+                    status: "parsing-failed",
+                    progress: 0,
+                    parsingError: {
+                      details: result.details || "Unknown parsing error",
+                      fileName: result.fileName || file.name,
+                      fileType: result.fileType || file.type,
+                      fileSize: result.fileSize || file.size,
+                      suggestions: result.suggestions || [],
+                      timestamp: result.timestamp || new Date().toISOString()
+                    },
+                  }
+                : f,
+            ),
+          )
+          
+          toast({
+            title: "❌ Parsing Failed",
+            description: `Failed to parse ${file.name}. Check the error details below.`,
+            variant: "destructive",
+          })
+          return
+        }
+        
         throw new Error(result.error || result.details || `HTTP ${response.status}`)
       }
 
@@ -189,7 +234,13 @@ export function UploadSection() {
     const file = uploadedFiles[index]
     if (file) {
       setUploadedFiles((prev) =>
-        prev.map((f, i) => (i === index ? { ...f, status: "uploading", progress: 0, error: undefined } : f)),
+        prev.map((f, i) => (i === index ? { 
+          ...f, 
+          status: "uploading", 
+          progress: 0, 
+          error: undefined,
+          parsingError: undefined 
+        } : f)),
       )
       await processFile(file.file, index)
     }
@@ -205,6 +256,8 @@ export function UploadSection() {
         return <CheckCircle className="h-4 w-4 text-green-600" />
       case "duplicate":
         return <FileCheck className="h-4 w-4 text-orange-600" />
+      case "parsing-failed":
+        return <AlertCircle className="h-4 w-4 text-red-600" />
       case "error":
         return <AlertCircle className="h-4 w-4 text-red-600" />
       default:
@@ -222,6 +275,8 @@ export function UploadSection() {
         return "border-green-200 bg-green-50"
       case "duplicate":
         return "border-orange-200 bg-orange-50"
+      case "parsing-failed":
+        return "border-red-200 bg-red-50"
       case "error":
         return "border-red-200 bg-red-50"
       default:
@@ -359,18 +414,20 @@ export function UploadSection() {
                             ? "default"
                             : uploadedFile.status === "duplicate"
                               ? "secondary"
-                              : uploadedFile.status === "error"
+                              : uploadedFile.status === "error" || uploadedFile.status === "parsing-failed"
                                 ? "destructive"
                                 : "outline"
                         }
                         className="capitalize"
                       >
-                        {uploadedFile.status === "duplicate" ? "Already Exists" : uploadedFile.status}
+                        {uploadedFile.status === "duplicate" ? "Already Exists" : 
+                         uploadedFile.status === "parsing-failed" ? "Parsing Failed" : 
+                         uploadedFile.status}
                       </Badge>
                     </div>
 
                     <div className="flex items-center space-x-2">
-                      {uploadedFile.status === "error" && (
+                      {(uploadedFile.status === "error" || uploadedFile.status === "parsing-failed") && (
                         <Button variant="outline" size="sm" onClick={() => retryFile(index)}>
                           <RefreshCw className="h-4 w-4" />
                         </Button>
@@ -491,16 +548,91 @@ export function UploadSection() {
                   )}
 
                   {/* Duplicate Warning */}
-                  {uploadedFile.status === "duplicate" && uploadedFile.duplicateInfo && (
-                    <div className="mt-3 p-4 bg-orange-50 rounded-lg border border-orange-200">
-                      <div className="flex items-center space-x-2 mb-2">
-                        <FileCheck className="h-5 w-5 text-orange-600" />
-                        <span className="font-medium text-orange-800">Duplicate File Detected</span>
+                  {uploadedFile.status === "duplicate" && (
+                    <div className="mt-3 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                      <div className="flex items-start space-x-2">
+                        <AlertTriangle className="h-5 w-5 text-orange-600 mt-0.5 flex-shrink-0" />
+                        <div className="flex-1">
+                          <h4 className="font-medium text-orange-800">Resume Already Exists</h4>
+                          <p className="text-sm text-orange-700 mt-1">
+                            This resume appears to be a duplicate of an existing candidate in our database.
+                          </p>
+                          {uploadedFile.duplicateInfo && (
+                            <div className="mt-2 text-xs text-orange-600 space-y-1">
+                              <p><strong>Existing Candidate:</strong> {uploadedFile.duplicateInfo.existingName}</p>
+                              <p><strong>Reason:</strong> {uploadedFile.duplicateInfo.reason}</p>
+                              <p><strong>Uploaded:</strong> {new Date(uploadedFile.duplicateInfo.uploadedAt).toLocaleDateString()}</p>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <p className="text-sm text-orange-700">
-                        This resume was already uploaded as <strong>{uploadedFile.duplicateInfo.existingName}</strong>{" "}
-                        on {new Date(uploadedFile.duplicateInfo.uploadedAt).toLocaleDateString()}
-                      </p>
+                    </div>
+                  )}
+
+                  {/* Parsing Failure */}
+                  {uploadedFile.status === "parsing-failed" && uploadedFile.parsingError && (
+                    <div className="mt-3 p-4 bg-red-50 border border-red-200 rounded-lg">
+                      <div className="flex items-start space-x-2">
+                        <AlertCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+                        <div className="flex-1">
+                          <h4 className="font-medium text-red-800">Resume Parsing Failed</h4>
+                          <p className="text-sm text-red-700 mt-1 mb-3">
+                            The AI was unable to extract information from this resume. This usually happens when the file is corrupted, password protected, or contains only images.
+                          </p>
+                          
+                          <div className="space-y-3">
+                            <div className="bg-white p-3 rounded border border-red-100">
+                              <h5 className="font-medium text-red-800 mb-2">Error Details:</h5>
+                              <p className="text-sm text-red-700">{uploadedFile.parsingError.details}</p>
+                            </div>
+                            
+                            <div className="bg-white p-3 rounded border border-red-100">
+                              <h5 className="font-medium text-red-800 mb-2">File Information:</h5>
+                              <div className="grid grid-cols-2 gap-2 text-xs text-red-600">
+                                <div><strong>Name:</strong> {uploadedFile.parsingError.fileName}</div>
+                                <div><strong>Type:</strong> {uploadedFile.parsingError.fileType}</div>
+                                <div><strong>Size:</strong> {(uploadedFile.parsingError.fileSize / 1024 / 1024).toFixed(1)} MB</div>
+                                <div><strong>Time:</strong> {new Date(uploadedFile.parsingError.timestamp).toLocaleTimeString()}</div>
+                              </div>
+                            </div>
+                            
+                            {uploadedFile.parsingError.suggestions && uploadedFile.parsingError.suggestions.length > 0 && (
+                              <div className="bg-white p-3 rounded border border-red-100">
+                                <h5 className="font-medium text-red-800 mb-2">Suggestions to Fix:</h5>
+                                <ul className="text-sm text-red-600 space-y-1">
+                                  {uploadedFile.parsingError.suggestions.map((suggestion, idx) => (
+                                    <li key={idx} className="flex items-start space-x-2">
+                                      <span className="text-red-500 mt-1">•</span>
+                                      <span>{suggestion}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                          
+                          <div className="mt-4 flex space-x-2">
+                            <Button 
+                              variant="outline" 
+                              size="sm" 
+                              onClick={() => retryFile(index)}
+                              className="border-red-200 text-red-700 hover:bg-red-100"
+                            >
+                              <RefreshCw className="h-4 w-4 mr-2" />
+                              Try Again
+                            </Button>
+                            <Button 
+                              variant="outline" 
+                              size="sm" 
+                              onClick={() => removeFile(index)}
+                              className="border-red-200 text-red-700 hover:bg-red-100"
+                            >
+                              <X className="h-4 w-4 mr-2" />
+                              Remove File
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
 

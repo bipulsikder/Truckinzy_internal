@@ -306,15 +306,19 @@ export async function searchCandidates(query: string, candidates: any[]): Promis
   try {
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" })
 
-    // Create candidate summaries for AI analysis
-    const candidateSummaries = candidates.map((candidate) => ({
+    // Create candidate summaries for AI analysis (cap size and field lengths to avoid 5xx/overload)
+    const safeStr = (v: any, max = 120): string => {
+      const s = (v || "").toString()
+      return s.length > max ? s.slice(0, max) : s
+    }
+    const candidateSummaries = candidates.slice(0, 200).map((candidate) => ({
       id: candidate.id || candidate._id,
-      name: candidate.name,
-      role: candidate.currentRole,
-      skills: candidate.technicalSkills?.join(", ") || "",
-      experience: candidate.totalExperience,
-      location: candidate.location,
-      summary: candidate.summary || candidate.resumeText?.substring(0, 500) || "",
+      name: safeStr(candidate.name, 80),
+      role: safeStr(candidate.currentRole, 100),
+      skills: safeStr((candidate.technicalSkills || []).join(", "), 200),
+      experience: safeStr(candidate.totalExperience, 30),
+      location: safeStr(candidate.location, 60),
+      summary: safeStr(candidate.summary || candidate.resumeText || "", 400),
     }))
 
     const prompt = `Analyze the search query and rank candidates by relevance. Return ONLY a valid JSON array of candidate IDs ordered by relevance (most relevant first).
@@ -334,7 +338,36 @@ Consider:
 Return format: ["candidate_id_1", "candidate_id_2", ...]`
 
     console.log("Sending search request to Gemini...")
-    const result = await model.generateContent(prompt)
+    // Minimal retry for transient 5xx/overload with hard timeout
+    const withTimeout = <T>(promise: Promise<T>, ms: number, label = "operation"): Promise<T> => {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms)
+        promise
+          .then((val) => {
+            clearTimeout(timer)
+            resolve(val)
+          })
+          .catch((err) => {
+            clearTimeout(timer)
+            reject(err)
+          })
+      })
+    }
+
+    const attempt = async () => withTimeout(model.generateContent(prompt), 8000, "Gemini search")
+    let result
+    try {
+      result = await attempt()
+    } catch (e: any) {
+      const msg = String(e?.message || e)
+      if (/(503|overloaded|timeout|temporarily unavailable)/i.test(msg)) {
+        console.log("Gemini transient error, retrying once in 800ms...")
+        await new Promise(r => setTimeout(r, 800))
+        result = await attempt()
+      } else {
+        throw e
+      }
+    }
     const response = await result.response
     let responseText = response.text()
 
@@ -368,53 +401,102 @@ Return format: ["candidate_id_1", "candidate_id_2", ...]`
       console.log("✅ AI search completed, returning", rankedCandidates.length, "results")
       return rankedCandidates
     } catch (parseError) {
-      console.error("❌ Failed to parse AI search response, falling back to basic search")
-      return basicSearch(query, candidates)
+      console.error("❌ Failed to parse AI search response, falling back to weighted search")
+      return weightedLocalSearch(query, candidates)
     }
   } catch (error) {
-    console.error("❌ AI search failed, falling back to basic search:", error)
-    return basicSearch(query, candidates)
+    console.error("❌ AI search failed, falling back to weighted search:", error)
+    return weightedLocalSearch(query, candidates)
   }
 }
 
-function basicSearch(query: string, candidates: any[]): any[] {
-  const queryLower = query.toLowerCase()
-  const searchTerms = queryLower.split(/\s+/).filter((term) => term.length > 2)
+function weightedLocalSearch(query: string, candidates: any[]): any[] {
+  const q = (query || "").trim().toLowerCase()
+  if (!q) return []
+  const terms = q.split(/\s+/).filter(t => t.length > 1)
+  const phrase = q.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim()
 
-  const results = candidates.map((candidate) => {
-    let relevanceScore = 0
-    const matchedFields: string[] = []
+  // Field weights and getters
+  const getFieldText = (c: any, key: string): string => {
+    switch (key) {
+      case "name": return c.name || ""
+      case "currentRole": return c.currentRole || ""
+      case "desiredRole": return c.desiredRole || ""
+      case "technicalSkills": return (c.technicalSkills || []).join(" ")
+      case "softSkills": return (c.softSkills || []).join(" ")
+      case "currentCompany": return c.currentCompany || ""
+      case "location": return c.location || ""
+      case "summary": return c.summary || ""
+      case "resumeText": return c.resumeText || ""
+      default: return ""
+    }
+  }
+  const fieldWeights: Record<string, number> = {
+    name: 0.2,
+    currentRole: 0.35,
+    desiredRole: 0.2,
+    technicalSkills: 0.3,
+    softSkills: 0.1,
+    currentCompany: 0.1,
+    location: 0.15,
+    summary: 0.15,
+    resumeText: 0.1,
+  }
 
-    // Define search fields with weights
-    const searchFields = [
-      { field: "currentRole", weight: 3, value: candidate.currentRole || "" },
-      { field: "technicalSkills", weight: 2, value: (candidate.technicalSkills || []).join(" ") },
-      { field: "location", weight: 2, value: candidate.location || "" },
-      { field: "currentCompany", weight: 1.5, value: candidate.currentCompany || "" },
-      { field: "resumeText", weight: 1, value: candidate.resumeText || "" },
-    ]
+  const scored = candidates.map((c) => {
+    let score = 0
+    let coverageHits = 0
+    const matches: string[] = []
 
-    // Calculate relevance score
-    searchTerms.forEach((term) => {
-      searchFields.forEach(({ field, weight, value }) => {
-        if (value.toLowerCase().includes(term)) {
-          relevanceScore += weight
-          if (!matchedFields.includes(field)) {
-            matchedFields.push(field)
-          }
-        }
-      })
+    // Phrase boost by field
+    Object.keys(fieldWeights).forEach((key) => {
+      const text = getFieldText(c, key).toLowerCase()
+      if (!text) return
+      if (phrase && text.includes(phrase)) {
+        score += fieldWeights[key] * 1.2
+        matches.push(phrase)
+      }
     })
 
+    // Term-level scoring with word-boundary regex
+    for (const term of terms) {
+      const boundary = new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")
+      let termHit = false
+      Object.keys(fieldWeights).forEach((key) => {
+        const text = getFieldText(c, key).toLowerCase()
+        if (!text) return
+        if (boundary.test(text)) {
+          termHit = true
+          // scale by occurrences (capped)
+          const occ = (text.match(boundary) || []).length
+          const occBoost = Math.min(1, occ * 0.25)
+          score += fieldWeights[key] * (0.6 + occBoost)
+          matches.push(term)
+        }
+      })
+      if (termHit) coverageHits += 1
+    }
+
+    // Coverage bonus: encourage profiles that hit most terms
+    if (terms.length > 0) {
+      const coverage = coverageHits / terms.length
+      score += 0.2 * coverage
+    }
+
+    // Normalize 0..1
+    const normalized = Math.max(0, Math.min(1, score))
     return {
-      ...candidate,
-      relevanceScore: relevanceScore / 10, // Normalize to 0-1 range
-      matchingKeywords: extractMatchingKeywords(query, candidate),
+      ...c,
+      relevanceScore: normalized,
+      matchingKeywords: [...new Set(matches)].filter(Boolean),
     }
   })
 
-  // Filter and sort by relevance
-  return results.filter((candidate) => candidate.relevanceScore > 0).sort((a, b) => b.relevanceScore - a.relevanceScore)
+  // Keep only meaningful matches and cap list size to reduce noise
+  return scored
+    .filter((c) => (c.relevanceScore || 0) >= 0.15)
+    .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
+    .slice(0, 200)
 }
 
 function extractMatchingKeywords(query: string, candidate: any): string[] {
