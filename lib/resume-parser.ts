@@ -63,14 +63,7 @@ function isValidParsedData(data: any): boolean {
     return false
   }
 
-  // Name should not be the same as filename (indicates extraction failure)
-  if (data.name && data.fileName) {
-    const cleanFileName = data.fileName.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ")
-    if (data.name.toLowerCase() === cleanFileName.toLowerCase()) {
-      console.log("❌ Name appears to be extracted from filename, likely parsing failure")
-      return false
-    }
-  }
+
 
   console.log("✅ Data validation passed for:", data.name)
   return true
