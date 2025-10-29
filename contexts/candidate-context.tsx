@@ -1,6 +1,7 @@
 "use client"
 
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react"
+import { logger } from "@/lib/logger"
 
 interface Candidate {
   _id: string
@@ -20,7 +21,7 @@ interface Candidate {
   certifications?: string[]
   resumeText: string
   fileName: string
-  driveFileUrl: string
+  fileUrl: string
   tags: string[]
   status: "new" | "reviewed" | "shortlisted" | "interviewed" | "selected" | "rejected" | "on-hold"
   rating?: number
@@ -28,12 +29,20 @@ interface Candidate {
   linkedinProfile?: string
   summary?: string
   notes?: string
+  // Detailed sections
+  workExperience?: Array<{ company: string; role: string; duration: string; description: string; responsibilities?: string[]; achievements?: string[]; technologies?: string[] }>
+  education?: Array<{ degree: string; specialization: string; institution: string; year: string; percentage: string; grade?: string; coursework?: string[]; projects?: string[] }>
 }
 
 interface CandidateContextType {
   candidates: Candidate[]
   isLoading: boolean
   hasMore: boolean
+  currentPage: number
+  pageSize: number
+  total: number
+  setPage: (page: number) => void
+  setPageSize: (size: number) => void
   refreshCandidates: () => Promise<void>
   loadMoreCandidates: () => Promise<void>
   lastFetched: Date | null
@@ -46,65 +55,92 @@ export function CandidateProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [lastFetched, setLastFetched] = useState<Date | null>(null)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [total, setTotal] = useState(0)
 
-  const fetchCandidates = useCallback(async () => {
+  const fetchCandidates = useCallback(async (page = currentPage, perPage = pageSize) => {
     try {
       setIsLoading(true)
-      console.log("🔄 Fetching candidates from API...")
-      
-      const response = await fetch('/api/candidates')
+      logger.info(`Fetching candidates from API (paginated): page=${page} perPage=${perPage}`)
+      const url = `/api/candidates?paginate=true&page=${page}&perPage=${perPage}`
+      const response = await fetch(url)
       if (response.ok) {
         const data = await response.json()
-        console.log("📊 API Response:", data)
-        
-        // Handle both array and object responses
-        const candidatesData = Array.isArray(data) ? data : (data.candidates || [])
-        console.log(`✅ Fetched ${candidatesData.length} candidates`)
-        
-        setCandidates(candidatesData)
-        setHasMore(false) // No pagination needed, always load all
+        logger.debug("API Response:", data)
+
+        // Expect { items, page, perPage, total }
+        const items = Array.isArray(data) ? data : (data.items || [])
+        const totalCount = Array.isArray(data) ? items.length : (data.total || items.length)
+        const pageNum = Array.isArray(data) ? page : (data.page || page)
+        const per = Array.isArray(data) ? perPage : (data.perPage || perPage)
+
+        logger.info(`Fetched ${items.length} candidates of total ${totalCount}`)
+
+        setCandidates(items)
+        setTotal(totalCount)
+        setHasMore(pageNum * per < totalCount)
         setLastFetched(new Date())
       } else {
-        console.error('Failed to fetch candidates:', response.status, response.statusText)
+        logger.error('Failed to fetch candidates:', response.status, response.statusText)
         const errorData = await response.json().catch(() => ({}))
-        console.error('Error details:', errorData)
+        logger.error('Error details:', errorData)
       }
     } catch (error) {
-      console.error('Error fetching candidates:', error)
+      logger.error('Error fetching candidates:', error)
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [currentPage, pageSize])
 
   const refreshCandidates = useCallback(async () => {
-    console.log("🔄 Refreshing candidates...")
-    await fetchCandidates()
-  }, [fetchCandidates])
+    logger.info("Refreshing candidates...")
+    await fetchCandidates(1, pageSize)
+    setCurrentPage(1)
+  }, [fetchCandidates, pageSize])
 
   const loadMoreCandidates = useCallback(async () => {
-    // No pagination needed, always load all candidates
-    await fetchCandidates()
-  }, [fetchCandidates])
+    // Advance page if more results are available
+    if (!hasMore) {
+      logger.info("No more candidates to load")
+      return
+    }
+    const nextPage = currentPage + 1
+    setCurrentPage(nextPage)
+    await fetchCandidates(nextPage, pageSize)
+  }, [hasMore, currentPage, pageSize, fetchCandidates])
 
-  // Always fetch fresh data when component mounts
+  // Fetch on mount and when page/pageSize changes
   useEffect(() => {
-    console.log("🚀 CandidateProvider mounted, fetching candidates...")
-    fetchCandidates()
-  }, [fetchCandidates])
+    logger.info("CandidateProvider mounted or pagination changed, fetching candidates...")
+    fetchCandidates(currentPage, pageSize)
+  }, [fetchCandidates, currentPage, pageSize])
+
+  const setPage = (page: number) => {
+    setCurrentPage(page)
+  }
 
   const value = {
     candidates,
     isLoading,
     hasMore,
+    currentPage,
+    pageSize,
+    total,
+    setPage,
+    setPageSize,
     refreshCandidates,
     loadMoreCandidates,
     lastFetched,
   }
 
-  console.log("📊 Context value updated:", {
+  logger.debug("Context value updated:", {
     candidatesCount: candidates.length,
     isLoading,
-    lastFetched
+    lastFetched,
+    currentPage,
+    pageSize,
+    total,
   })
 
   return (
@@ -120,4 +156,4 @@ export function useCandidates() {
     throw new Error('useCandidates must be used within a CandidateProvider')
   }
   return context
-} 
+}

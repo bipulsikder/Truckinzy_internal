@@ -11,6 +11,8 @@ import { Search, Download, Eye, Filter, User, MapPin, Briefcase, Building, Trash
 import { useToast } from "@/hooks/use-toast"
 import { CandidatePreviewDialog } from "./candidate-preview-dialog"
 import { useCandidates } from "@/contexts/candidate-context"
+import { logger } from "@/lib/logger"
+import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationPrevious, PaginationNext, PaginationEllipsis } from "@/components/ui/pagination"
 
 interface Candidate {
   _id: string
@@ -30,7 +32,7 @@ interface Candidate {
   certifications?: string[]
   resumeText: string
   fileName: string
-  driveFileUrl: string
+  fileUrl: string
   tags: string[]
   status: "new" | "reviewed" | "shortlisted" | "interviewed" | "selected" | "rejected" | "on-hold"
   rating?: number
@@ -38,6 +40,9 @@ interface Candidate {
   linkedinProfile?: string
   summary?: string
   notes?: string
+  // Detailed sections
+  workExperience?: Array<{ company: string; role: string; duration: string; description: string; responsibilities?: string[]; achievements?: string[]; technologies?: string[] }>
+  education?: Array<{ degree: string; specialization: string; institution: string; year: string; percentage: string; grade?: string; coursework?: string[]; projects?: string[] }>
 }
 
 export function CandidateDashboard() {
@@ -45,7 +50,11 @@ export function CandidateDashboard() {
     candidates, 
     isLoading, 
     refreshCandidates, 
-    lastFetched
+    lastFetched,
+    currentPage,
+    pageSize,
+    total,
+    setPage,
   } = useCandidates()
   
   const [filteredCandidates, setFilteredCandidates] = useState<Candidate[]>([])
@@ -66,7 +75,7 @@ export function CandidateDashboard() {
   }, [])
 
   const filterCandidates = useCallback(() => {
-    console.log("🔍 Filtering candidates:", { 
+    logger.debug("Filtering candidates:", { 
       totalCandidates: candidates.length, 
       searchTerm, 
       statusFilter,
@@ -109,13 +118,13 @@ export function CandidateDashboard() {
       }
     })
 
-    console.log("✅ Filtered and sorted candidates:", filtered.length)
+    logger.info("Filtered and sorted candidates:", filtered.length)
     setFilteredCandidates(filtered)
   }, [candidates, searchTerm, statusFilter, sortBy])
 
   useEffect(() => {
     if (mounted) {
-      console.log("🎯 Component mounted, filtering candidates...")
+      logger.debug("Component mounted, filtering candidates...")
       filterCandidates()
     }
   }, [mounted, filterCandidates])
@@ -123,14 +132,14 @@ export function CandidateDashboard() {
   // Auto-refresh candidates every time the component is accessed
   useEffect(() => {
     if (mounted) {
-      console.log("🔄 Auto-refreshing candidates...")
+      logger.info("Auto-refreshing candidates...")
       refreshCandidates()
     }
   }, [mounted, refreshCandidates])
 
   // Debug logging
   useEffect(() => {
-    console.log("📊 Candidates state updated:", {
+    logger.debug("Candidates state updated:", {
       candidatesCount: candidates.length,
       filteredCount: filteredCandidates.length,
       isLoading,
@@ -166,7 +175,7 @@ export function CandidateDashboard() {
         throw new Error("Failed to update status")
       }
     } catch (error) {
-      console.error("Update error:", error)
+      logger.error("Update error:", error)
       toast({
         title: "Error",
         description: "Failed to update candidate status",
@@ -267,6 +276,8 @@ export function CandidateDashboard() {
         if (selectedCandidate && selectedCandidate._id === candidateId) {
           setSelectedCandidate(null)
         }
+        // Refresh the candidates list to update the UI
+        refreshCandidates()
         toast({
           title: "Candidate Deleted",
           description: `${candidateName} has been deleted successfully`,
@@ -275,7 +286,7 @@ export function CandidateDashboard() {
         throw new Error("Failed to delete candidate")
       }
     } catch (error) {
-      console.error("Delete error:", error)
+      logger.error("Delete error:", error)
       toast({
         title: "Error",
         description: "Failed to delete candidate",
@@ -494,7 +505,7 @@ export function CandidateDashboard() {
   }
 
   const canReparse = (candidate: Candidate) => {
-    return candidate.driveFileUrl && candidate.driveFileUrl.length > 0
+    return candidate.fileUrl && candidate.fileUrl.length > 0
   }
 
   const getCandidateDisplayName = (candidate: Candidate) => {
@@ -555,85 +566,6 @@ export function CandidateDashboard() {
           >
             <RefreshCw className="h-4 w-4" />
             Refresh
-          </Button>
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={async () => {
-              console.log("🧪 Testing API manually...")
-              try {
-                const response = await fetch('/api/candidates')
-                const data = await response.json()
-                console.log("🧪 Manual API test result:", data)
-                toast({
-                  title: "API Test",
-                  description: `API returned ${Array.isArray(data) ? data.length : 'unknown'} candidates`,
-                })
-              } catch (error) {
-                console.error("🧪 Manual API test failed:", error)
-                toast({
-                  title: "API Test Failed",
-                  description: "Check console for details",
-                  variant: "destructive",
-                })
-              }
-            }}
-            className="flex items-center space-x-2"
-          >
-            🧪 Test API
-          </Button>
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={async () => {
-              console.log("🔍 Checking debug info...")
-              try {
-                const response = await fetch('/api/debug')
-                const data = await response.json()
-                console.log("🔍 Debug info:", data)
-                toast({
-                  title: "Debug Info",
-                  description: "Check console for environment variables",
-                })
-              } catch (error) {
-                console.error("🔍 Debug check failed:", error)
-                toast({
-                  title: "Debug Failed",
-                  description: "Check console for details",
-                  variant: "destructive",
-                })
-              }
-            }}
-            className="flex items-center space-x-2"
-          >
-            🔍 Debug
-          </Button>
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={async () => {
-              console.log("🏥 Checking system health...")
-              try {
-                const response = await fetch('/api/health')
-                const data = await response.json()
-                console.log("🏥 Health check result:", data)
-                toast({
-                  title: "Health Check",
-                  description: data.googleSheets.connected ? "System healthy" : "Google Sheets issue",
-                  variant: data.googleSheets.connected ? "default" : "destructive",
-                })
-              } catch (error) {
-                console.error("🏥 Health check failed:", error)
-                toast({
-                  title: "Health Check Failed",
-                  description: "Check console for details",
-                  variant: "destructive",
-                })
-              }
-            }}
-            className="flex items-center space-x-2"
-          >
-            🏥 Health
           </Button>
           <Button variant={viewMode === "grid" ? "default" : "outline"} size="sm" onClick={() => setViewMode("grid")}>
             Grid
@@ -857,9 +789,9 @@ export function CandidateDashboard() {
                       <Eye className="h-4 w-4" />
                     </Button>
 
-                    {candidate.driveFileUrl && (
+                    {candidate.fileUrl && (
                       <Button variant="outline" size="sm" asChild>
-                        <a href={candidate.driveFileUrl} download={candidate.fileName}>
+                        <a href={candidate.fileUrl} download={candidate.fileName}>
                           <Download className="h-4 w-4" />
                         </a>
                       </Button>
@@ -1004,9 +936,9 @@ export function CandidateDashboard() {
                       <Eye className="h-4 w-4" />
                     </Button>
 
-                    {candidate.driveFileUrl && (
+                    {candidate.fileUrl && (
                       <Button variant="outline" size="sm" asChild>
-                        <a href={candidate.driveFileUrl} download={candidate.fileName}>
+                        <a href={candidate.fileUrl} download={candidate.fileName}>
                           <Download className="h-4 w-4" />
                         </a>
                       </Button>
@@ -1077,6 +1009,40 @@ export function CandidateDashboard() {
           ))}
         </div>
       )}
+
+        {/* Pagination Controls */}
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-gray-600">
+            Page <span className="font-medium">{currentPage}</span> of <span className="font-medium">{Math.max(1, Math.ceil(total / pageSize))}</span>
+          </div>
+          <Pagination>
+            <PaginationContent>
+              <PaginationItem>
+                <PaginationPrevious href="#" onClick={(e) => { e.preventDefault(); if (currentPage > 1) setPage(currentPage - 1) }} />
+              </PaginationItem>
+              <PaginationItem>
+                <PaginationLink href="#" isActive>
+                  {currentPage}
+                </PaginationLink>
+              </PaginationItem>
+              {currentPage + 1 <= Math.max(1, Math.ceil(total / pageSize)) && (
+                <PaginationItem>
+                  <PaginationLink href="#" onClick={(e) => { e.preventDefault(); setPage(currentPage + 1) }}>
+                    {currentPage + 1}
+                  </PaginationLink>
+                </PaginationItem>
+              )}
+              {currentPage + 2 <= Math.max(1, Math.ceil(total / pageSize)) && (
+                <PaginationItem>
+                  <PaginationEllipsis />
+                </PaginationItem>
+              )}
+              <PaginationItem>
+                <PaginationNext href="#" onClick={(e) => { e.preventDefault(); const totalPages = Math.max(1, Math.ceil(total / pageSize)); if (currentPage < totalPages) setPage(currentPage + 1) }} />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+        </div>
 
         {/* Candidate Preview Dialog */}
         <CandidatePreviewDialog

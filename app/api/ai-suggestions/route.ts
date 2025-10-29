@@ -1,6 +1,14 @@
 import { type NextRequest, NextResponse } from "next/server"
 
 export async function POST(request: NextRequest) {
+  // Authorization: require login cookie or valid admin token
+  const authCookie = request.cookies.get("auth")?.value
+  const authHeader = request.headers.get("authorization")
+  const hasAdminToken = authHeader === `Bearer ${process.env.ADMIN_TOKEN}`
+  if (authCookie !== "true" && !hasAdminToken) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
   try {
     const { input, context } = await request.json()
 
@@ -167,7 +175,7 @@ export async function POST(request: NextRequest) {
     // Partial matches
     const partialMatches = logisticsSuggestions.filter((suggestion) => {
       const words = inputLower.split(" ")
-      return words.some((word) => word.length > 2 && suggestion.toLowerCase().includes(word))
+      return words.some((word: string) => word.length > 2 && suggestion.toLowerCase().includes(word))
     })
 
     // Combine and deduplicate

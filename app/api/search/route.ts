@@ -1,13 +1,21 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { searchCandidates } from "@/lib/ai-utils"
-import { getAllCandidates } from "@/lib/google-sheets"
+import { searchCandidates, extractKeywordsFromSentence } from "@/lib/ai-utils"
+import { SupabaseCandidateService } from "@/lib/supabase-candidates"
 
 // Simple in-memory cache to reduce repeated full-sheet reads during rapid searches
 let candidatesCache: any[] | null = null
 let candidatesCacheAt = 0
 const CANDIDATES_CACHE_MS = 60_000
 
-export async function POST(request: NextRequest) {
+export async function GET(request: NextRequest) {
+  // Authorization: require login cookie or valid admin token
+  const authCookie = request.cookies.get("auth")?.value
+  const authHeader = request.headers.get("authorization")
+  const hasAdminToken = authHeader === `Bearer ${process.env.ADMIN_TOKEN}`
+  if (authCookie !== "true" && !hasAdminToken) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
   try {
     const body = await request.json()
     const { query, jobDescription, searchType, filters } = body
@@ -18,12 +26,19 @@ export async function POST(request: NextRequest) {
     console.log("Job Description:", jobDescription ? "Provided" : "Not provided")
     console.log("Filters:", filters)
 
-    // Get all candidates from Google Sheets (with short cache)
+    // Get all candidates from Supabase (with short cache)
     const now = Date.now()
     if (!candidatesCache || now - candidatesCacheAt > CANDIDATES_CACHE_MS) {
-      const fresh = await getAllCandidates()
-      candidatesCache = fresh
-      candidatesCacheAt = now
+      try {
+        const fresh = await SupabaseCandidateService.getAllCandidates()
+        candidatesCache = fresh
+        candidatesCacheAt = now
+      } catch (error) {
+        console.error("Error fetching candidates from Supabase:", error)
+        // Return empty array if Supabase fails
+        candidatesCache = []
+        candidatesCacheAt = now
+      }
     }
     const allCandidates = candidatesCache
     console.log("Total candidates:", allCandidates.length)
@@ -39,15 +54,69 @@ export async function POST(request: NextRequest) {
       languagesKnown: Array.isArray(candidate.languagesKnown) ? candidate.languagesKnown : [],
     }))
 
-    let results = []
+    let results: any[] = []
 
     switch (searchType) {
       case "smart":
-        // Smart AI search
+        // Smart AI search with enhanced keyword processing
         if (!query || query.trim().length === 0) {
           return NextResponse.json({ error: "Search query is required" }, { status: 400 })
         }
-        results = await searchCandidates(query, transformedCandidates)
+        
+        // Extract and filter relevant keywords from the query
+        console.log("Processing TruckinzyAI search query:", query)
+        const relevantKeywords = extractKeywordsFromSentence(query)
+        const processedQuery = relevantKeywords.length > 0 ? relevantKeywords.join(' ') : query
+        console.log("Filtered keywords for AI search:", relevantKeywords)
+        console.log("Processed query:", processedQuery)
+        
+        try {
+          // First try to use Supabase full-text search with processed query
+          const supabaseResults = await SupabaseCandidateService.searchCandidates(processedQuery)
+          if (supabaseResults && supabaseResults.length > 0) {
+            // Transform results to match expected format with better matching keywords
+            results = supabaseResults.map(candidate => {
+              const candidateText = [
+                candidate.currentRole || '',
+                candidate.desiredRole || '',
+                candidate.currentCompany || '',
+                (candidate.summary || ''),
+                (candidate.resumeText || ''),
+                ...(candidate.technicalSkills || []),
+                ...(candidate.softSkills || []),
+              ].join(' ').toLowerCase();
+              
+              const exactMatches = (relevantKeywords || []).filter(kw => 
+                kw && candidateText.includes(kw.toLowerCase())
+              );
+              const coverage = (relevantKeywords || []).length > 0 
+                ? exactMatches.length / relevantKeywords.length 
+                : 0.6;
+              const relevanceScore = Math.max(0.5, Math.min(0.95, coverage + 0.3));
+              const matchPercentage = Math.round(Math.min(100, coverage * 100));
+              
+              return {
+                ...candidate,
+                relevanceScore,
+                matchPercentage,
+                matchingKeywords: exactMatches.length > 0 ? exactMatches : (relevantKeywords.length > 0 ? relevantKeywords : [query])
+              }
+            })
+            break
+          }
+        } catch (error) {
+          console.error("Supabase search failed, falling back to AI search:", error)
+          // Continue to AI search fallback
+        }
+        
+        // Use processed query for AI search
+        results = await searchCandidates(processedQuery, transformedCandidates)
+        
+        // Enhance results with better matching keywords
+        results = results.map(candidate => ({
+          ...candidate,
+          matchingKeywords: relevantKeywords.length > 0 ? relevantKeywords : [query]
+        }))
         break
 
       case "jd":
@@ -55,7 +124,19 @@ export async function POST(request: NextRequest) {
         if (!jobDescription || jobDescription.trim().length === 0) {
           return NextResponse.json({ error: "Job description is required" }, { status: 400 })
         }
+        
+        // Extract keywords from job description for better matching
+        const extractedJDKeywords = extractKeywordsFromSentence(jobDescription);
+        console.log("Extracted keywords from JD:", extractedJDKeywords);
+        
+        // Use jdBasedSearch with the original job description
         results = await jdBasedSearch(jobDescription, transformedCandidates)
+        
+        // Add extracted keywords to the results
+        results = results.map(candidate => ({
+          ...candidate,
+          extractedKeywords: extractedJDKeywords
+        }))
         break
 
       case "manual":
@@ -71,6 +152,21 @@ export async function POST(request: NextRequest) {
     }
 
     console.log("Search results:", results.length)
+
+    // Optional server-side pagination
+    const paginate = Boolean(body?.paginate)
+    const page = Math.max(1, Number(body?.page) || 1)
+    const perPage = Math.max(1, Math.min(100, Number(body?.perPage) || 20))
+
+    if (paginate) {
+      const total = results.length
+      const totalPages = Math.max(1, Math.ceil(total / perPage))
+      const currentPage = Math.min(page, totalPages)
+      const startIdx = (currentPage - 1) * perPage
+      const items = results.slice(startIdx, startIdx + perPage)
+      return NextResponse.json({ items, total, page: currentPage, perPage })
+    }
+
     return NextResponse.json(results)
   } catch (error) {
     console.error("Search error:", error)
@@ -82,265 +178,193 @@ export async function POST(request: NextRequest) {
 }
 
 async function jdBasedSearch(jobDescription: string, candidates: any[]): Promise<any[]> {
-  console.log("=== JD-Based Search (Separate from Manual) ===")
+  console.log("=== JD-Based Search (Skill-Only, Logistics Domain) ===")
 
   try {
-    // Extract requirements from JD using AI
-    const extractedQuery = await extractRequirementsFromJD(jobDescription)
-    console.log("Extracted requirements:", extractedQuery)
-
-    // Use the extracted requirements to search candidates
-    return await searchCandidates(extractedQuery, candidates)
+    const jdText = (jobDescription || '').toLowerCase();
+    
+    // Use ONLY the provided logistics skill list for JD search
+    const LOGISTICS_SKILLS = [
+      'gps tracking',
+      'fleet management',
+      'route optimization',
+      'supply chain management',
+      'inventory management',
+      'logistics planning',
+      'vehicle tracking',
+      'warehouse management',
+      'transportation management',
+      'driver management',
+      'fuel management',
+      'maintenance scheduling',
+      'compliance',
+      'safety regulations',
+      'dot regulations',
+      'international fuel tax agreement',
+      'communication',
+      'problem solving',
+      'leadership',
+      'team management',
+      'data analysis',
+    ];
+    
+    // Match skills appearing in the JD text (strict intersection)
+    const matchedSkills = LOGISTICS_SKILLS.filter(skill => jdText.includes(skill.toLowerCase()));
+    console.log('JD matched skills:', matchedSkills);
+    
+    const skillsForSearch = matchedSkills.length > 0 ? matchedSkills : LOGISTICS_SKILLS;
+    console.log('Using Supabase skill-based search with skills:', skillsForSearch);
+    
+    // Primary: Supabase skill-based search
+    try {
+      const supabaseResults = await SupabaseCandidateService.searchCandidatesBySkills(skillsForSearch);
+      
+      if (supabaseResults && supabaseResults.length > 0) {
+        // Score candidates by matched skill count and distribution across fields
+        const scored = supabaseResults.map(candidate => {
+          const text = [
+            (candidate.currentRole || ''),
+            (candidate.summary || ''),
+            (candidate.resumeText || ''),
+            (candidate.currentCompany || ''),
+            ...(candidate.technicalSkills || []),
+            ...(candidate.softSkills || []),
+          ].join(' ').toLowerCase();
+          
+          const candidateSkills = new Set((candidate.technicalSkills || []).map((s: string) => s.toLowerCase()));
+          let hits = 0;
+          skillsForSearch.forEach(skill => {
+            const s = skill.toLowerCase();
+            if (candidateSkills.has(s) || text.includes(s)) hits += 1;
+          });
+          
+          // Relevance based on ratio of matched skills and slight text boost
+          const base = hits / skillsForSearch.length; // 0..1
+          const boost = Math.min(0.15, hits * 0.02);
+          const relevanceScore = Math.max(0, Math.min(1, base + boost));
+          const matchPercentage = Math.round(base * 100);
+          
+          return {
+            ...candidate,
+            relevanceScore,
+            matchPercentage,
+            matchingKeywords: matchedSkills.length > 0 ? matchedSkills : skillsForSearch,
+          };
+        });
+        
+        // Sort by relevance and return
+        return scored.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+      }
+    } catch (error) {
+      console.error('Supabase skill search failed, falling back to local/AI search:', error);
+    }
+    
+    // Fallback: local weighted search using skill phrases as query
+    const fallbackQuery = skillsForSearch.join(' ');
+    const aiResults = await searchCandidates(fallbackQuery, candidates);
+    return aiResults.map(c => ({
+      ...c,
+      matchingKeywords: matchedSkills.length > 0 ? matchedSkills : skillsForSearch,
+    }));
   } catch (error) {
-    console.error("JD analysis failed, falling back to keyword search:", error)
-    // Fallback: Use JD text directly for search
-    return await searchCandidates(jobDescription, candidates)
+    console.error('JD analysis failed:', error);
+    // Final fallback: return empty array rather than noisy matches
+    return [];
   }
 }
 
 async function extractRequirementsFromJD(jobDescription: string): Promise<string> {
-  const jdLower = jobDescription.toLowerCase()
-  const requirements: string[] = []
+  // Only extract requirements list without external API calls
+  try {
+    const text = (jobDescription || '').toLowerCase();
+    
+    const requirements: string[] = [];
+    
+    // Extract common logistics requirements heuristically
+    const patterns = [
+      { keyword: 'gps', match: 'GPS tracking proficiency' },
+      { keyword: 'fleet', match: 'Fleet operations management' },
+      { keyword: 'route', match: 'Route planning and optimization' },
+      { keyword: 'supply chain', match: 'Supply chain coordination' },
+      { keyword: 'inventory', match: 'Inventory control and tracking' },
+      { keyword: 'warehouse', match: 'Warehouse management systems' },
+      { keyword: 'transportation', match: 'Transportation and dispatch' },
+      { keyword: 'driver', match: 'Driver scheduling and oversight' },
+      { keyword: 'fuel', match: 'Fuel usage monitoring' },
+      { keyword: 'maintenance', match: 'Maintenance scheduling' },
+      { keyword: 'compliance', match: 'Compliance with DOT and safety' },
+      { keyword: 'communication', match: 'Strong communication skills' },
+      { keyword: 'leadership', match: 'Team leadership and coordination' },
+      { keyword: 'analysis', match: 'Data analysis skills' },
+    ];
+    
+    patterns.forEach(({ keyword, match }) => {
+      if (text.includes(keyword)) requirements.push(match);
+    });
 
-  // Extract role-related keywords
-  const roleKeywords = [
-    "fleet manager",
-    "logistics coordinator",
-    "transport manager",
-    "supply chain",
-    "warehouse manager",
-    "delivery executive",
-    "truck driver",
-    "operations manager",
-    "route planner",
-    "dispatcher",
-    "cargo manager",
-    "inventory manager",
-  ]
-
-  roleKeywords.forEach((keyword) => {
-    if (jdLower.includes(keyword)) {
-      requirements.push(keyword)
+    if (requirements.length === 0) {
+      requirements.push(
+        'Basic logistics operations understanding',
+        'Ability to learn trucking platform tools',
+        'Attention to detail and compliance awareness',
+      );
     }
-  })
 
-  // Extract experience requirements
-  const expMatch = jdLower.match(/(\d+)[\s]*(?:to|-)[\s]*(\d+)[\s]*years?|(\d+)\+?[\s]*years?/)
-  if (expMatch) {
-    requirements.push(`${expMatch[0]} experience`)
+    return requirements.join(', ');
+  } catch (error) {
+    console.error('JD requirements extraction failed:', error);
+    return '';
   }
-
-  // Extract location
-  const locationMatch = jdLower.match(
-    /(mumbai|delhi|bangalore|chennai|kolkata|hyderabad|pune|ahmedabad|gurgaon|noida)/g,
-  )
-  if (locationMatch) {
-    requirements.push(...locationMatch)
-  }
-
-  // Extract skills
-  const skillKeywords = [
-    "gps tracking",
-    "fleet management",
-    "route optimization",
-    "fastag",
-    "wms",
-    "tms",
-    "supply chain management",
-    "inventory management",
-    "logistics planning",
-    "vehicle tracking",
-    "warehouse management",
-    "transportation management",
-    "cargo handling",
-    "load planning",
-  ]
-
-  skillKeywords.forEach((skill) => {
-    if (jdLower.includes(skill)) {
-      requirements.push(skill)
-    }
-  })
-
-  return requirements.join(" ")
 }
 
 async function minimalManualSearch(filters: any, candidates: any[]): Promise<any[]> {
-  console.log("=== Minimal Manual Search ===")
-  console.log("Filters:", filters)
+  try {
+    const keywords = (filters.keywords || []).map((k: string) => k.toLowerCase());
+    const location = (filters.location || '').toLowerCase();
+    const minExp = parseFloat(filters.minExperience || '0');
+    const maxExp = parseFloat(filters.maxExperience || '100');
+    const education = (filters.education || '').toLowerCase();
 
-  let filteredCandidates = candidates
+    const results = candidates.filter((c: any) => {
+      const textBlob = [
+        (c.currentRole || ''),
+        (c.summary || ''),
+        (c.resumeText || ''),
+        (c.currentCompany || ''),
+        ...(Array.isArray(c.technicalSkills) ? c.technicalSkills : []),
+        ...(Array.isArray(c.softSkills) ? c.softSkills : []),
+      ].join(' ').toLowerCase();
 
-  // Filter by keywords (required)
-  if (filters.keywords && filters.keywords.length > 0) {
-    filteredCandidates = filteredCandidates.filter((candidate) => {
-      const searchableText = [
-        candidate.name || "",
-        candidate.currentRole || "",
-        candidate.desiredRole || "",
-        candidate.currentCompany || "",
-        ...(candidate.technicalSkills || []),
-        ...(candidate.softSkills || []),
-        candidate.resumeText || "",
-        candidate.summary || "",
-      ]
-        .join(" \n ")
-        .toLowerCase()
+      const hasKeywords = keywords.length === 0 || keywords.some((k: string) => textBlob.includes(k));
+      const hasLocation = !location || (c.location || '').toLowerCase().includes(location);
+      const hasEducation = !education || (c.highestQualification || '').toLowerCase().includes(education) || (c.degree || '').toLowerCase().includes(education);
+      
+      // Naive experience parsing (expects "X years")
+      let years = 0;
+      const expText = (c.totalExperience || '').toLowerCase();
+      const match = expText.match(/([0-9]+)\s*year/);
+      if (match) years = parseFloat(match[1]);
 
-      return filters.keywords.some((keyword: string) => searchableText.includes(keyword.toLowerCase()))
-    })
+      const hasExperience = (!filters.minExperience && !filters.maxExperience) || (years >= minExp && years <= maxExp);
+
+      return hasKeywords && hasLocation && hasEducation && hasExperience;
+    }).map((c: any) => ({
+      ...c,
+      relevanceScore: 0.6, // basic default score
+      matchingKeywords: keywords,
+    }));
+
+    // Sort by relevance then recent uploads
+    return results.sort((a: any, b: any) => {
+      if ((b.relevanceScore || 0) !== (a.relevanceScore || 0)) {
+        return (b.relevanceScore || 0) - (a.relevanceScore || 0)
+      }
+      const dateA = new Date(a.uploadedAt || 0).getTime()
+      const dateB = new Date(b.uploadedAt || 0).getTime()
+      return dateB - dateA
+    });
+  } catch (error) {
+    console.error('Manual search failed:', error);
+    return [];
   }
-
-  // Filter by experience type
-  if (filters.experienceType === "freshers") {
-    filteredCandidates = filteredCandidates.filter((candidate) => {
-      const exp = Number.parseInt(candidate.totalExperience) || 0
-      return exp <= 1
-    })
-  } else if (filters.experienceType === "experienced") {
-    filteredCandidates = filteredCandidates.filter((candidate) => {
-      const exp = Number.parseInt(candidate.totalExperience) || 0
-      return exp > 1
-    })
-  }
-
-  // Filter by location
-  if (filters.location && filters.location.trim()) {
-    filteredCandidates = filteredCandidates.filter((candidate) =>
-      (candidate.location || "").toLowerCase().includes(filters.location.toLowerCase()),
-    )
-  }
-
-  // Filter by experience range
-  if (filters.minExperience) {
-    const minExp = Number.parseInt(filters.minExperience)
-    filteredCandidates = filteredCandidates.filter((candidate) => {
-      const exp = Number.parseInt(candidate.totalExperience) || 0
-      return exp >= minExp
-    })
-  }
-
-  if (filters.maxExperience) {
-    const maxExp = Number.parseInt(filters.maxExperience)
-    filteredCandidates = filteredCandidates.filter((candidate) => {
-      const exp = Number.parseInt(candidate.totalExperience) || 0
-      return exp <= maxExp
-    })
-  }
-
-  // Filter by education
-  if (filters.education && filters.education.trim()) {
-    filteredCandidates = filteredCandidates.filter((candidate) => {
-      const candidateEducation = (candidate.highestQualification || "").toLowerCase()
-      const filterEducation = filters.education.toLowerCase()
-
-      if (filterEducation.includes("10th")) {
-        return candidateEducation.includes("10th") || candidateEducation.includes("secondary")
-      }
-      if (filterEducation.includes("12th")) {
-        return candidateEducation.includes("12th") || candidateEducation.includes("higher secondary")
-      }
-      if (filterEducation.includes("diploma")) {
-        return candidateEducation.includes("diploma")
-      }
-      if (filterEducation.includes("graduate")) {
-        return candidateEducation.includes("graduate") || candidateEducation.includes("bachelor")
-      }
-      if (filterEducation.includes("postgraduate")) {
-        return candidateEducation.includes("post graduate") || candidateEducation.includes("master")
-      }
-
-      return candidateEducation.includes(filterEducation)
-    })
-  }
-
-  // Enhanced relevance scoring for better results
-  const resultsWithScores = filteredCandidates.map((candidate) => {
-    let score = 0
-    const matches: string[] = []
-
-    const fieldWeights: Record<string, number> = {
-      name: 0.25,
-      currentRole: 0.3,
-      desiredRole: 0.2,
-      currentCompany: 0.15,
-      technicalSkills: 0.25,
-      softSkills: 0.1,
-      resumeText: 0.15,
-      summary: 0.1,
-    }
-
-    const addMatch = (kw: string, weight: number) => {
-      score += weight
-      matches.push(kw)
-    }
-
-    // Keyword scoring by field with weights and occurrence boost
-    if (filters.keywords && filters.keywords.length > 0) {
-      const klist = filters.keywords.map((k: string) => (k || "").toLowerCase()).filter(Boolean)
-      for (const kw of klist) {
-        const re = new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi")
-
-        const name = (candidate.name || "").toLowerCase()
-        if (re.test(name)) addMatch(kw, fieldWeights.name)
-
-        const role = (candidate.currentRole || "").toLowerCase()
-        if (re.test(role)) addMatch(kw, fieldWeights.currentRole)
-
-        const desired = (candidate.desiredRole || "").toLowerCase()
-        if (re.test(desired)) addMatch(kw, fieldWeights.desiredRole)
-
-        const company = (candidate.currentCompany || "").toLowerCase()
-        if (re.test(company)) addMatch(kw, fieldWeights.currentCompany)
-
-        const techSkills = (candidate.technicalSkills || []).map((s: string) => s.toLowerCase()).join(" ")
-        if (re.test(techSkills)) addMatch(kw, fieldWeights.technicalSkills)
-
-        const softSkills = (candidate.softSkills || []).map((s: string) => s.toLowerCase()).join(" ")
-        if (re.test(softSkills)) addMatch(kw, fieldWeights.softSkills)
-
-        const resume = (candidate.resumeText || "").toLowerCase()
-        const resumeMatches = resume.match(re)?.length || 0
-        if (resumeMatches > 0) addMatch(kw, fieldWeights.resumeText * Math.min(1, 0.25 * resumeMatches))
-
-        const summary = (candidate.summary || "").toLowerCase()
-        if (re.test(summary)) addMatch(kw, fieldWeights.summary)
-      }
-    }
-
-    // Location bonus
-    if (filters.location && filters.location.trim()) {
-      const loc = filters.location.toLowerCase()
-      if ((candidate.location || "").toLowerCase().includes(loc)) {
-        addMatch(filters.location, 0.15)
-      }
-    }
-
-    // Experience alignment bonus
-    if (filters.experienceType !== "any") {
-      const exp = Number.parseInt(candidate.totalExperience) || 0
-      if ((filters.experienceType === "freshers" && exp <= 1) || (filters.experienceType === "experienced" && exp > 1)) {
-        score += 0.05
-      }
-    }
-
-    // Education bonus
-    if (filters.education && filters.education.trim()) {
-      const ce = (candidate.highestQualification || "").toLowerCase()
-      const fe = filters.education.toLowerCase()
-      if (ce.includes(fe)) score += 0.05
-    }
-
-    // Normalize score to 0..1
-    const normalized = Math.max(0, Math.min(1, score))
-
-    return {
-      ...candidate,
-      relevanceScore: normalized,
-      matchingKeywords: [...new Set(matches)],
-    }
-  })
-
-  // Sort by relevance score (higher is better)
-  return resultsWithScores.sort((a, b) => b.relevanceScore - a.relevanceScore)
 }

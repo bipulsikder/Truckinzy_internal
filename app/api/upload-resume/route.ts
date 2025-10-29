@@ -2,10 +2,18 @@ import { type NextRequest, NextResponse } from "next/server"
 export const runtime = "nodejs"
 import { parseResume } from "@/lib/resume-parser"
 import { generateEmbedding } from "@/lib/ai-utils"
-import { addCandidate, getAllCandidates } from "@/lib/google-sheets"
-import { uploadFileToBlob, checkFileExistsInBlob } from "@/lib/vercel-blob-utils"
+import { SupabaseCandidateService } from "@/lib/supabase-candidates"
+import { ensureResumeBucketExists } from "@/lib/supabase-storage-utils"
 
 export async function POST(request: NextRequest) {
+  // Authorization: require login cookie or valid admin token
+  const authCookie = request.cookies.get("auth")?.value
+  const authHeader = request.headers.get("authorization")
+  const hasAdminToken = authHeader === `Bearer ${process.env.ADMIN_TOKEN}`
+  if (authCookie !== "true" && !hasAdminToken) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
   console.log("=== Comprehensive Resume Upload Started ===")
 
   try {
@@ -47,23 +55,26 @@ export async function POST(request: NextRequest) {
     console.log(`File extension: ${file.name.split('.').pop()?.toLowerCase()}`)
     console.log(`MIME type validation: ${allowedTypes.includes(file.type) ? 'PASSED' : 'FAILED'}`)
 
-    // FIRST: Check if file already exists in blob storage
-    console.log("Checking if file already exists in blob storage...")
-    const fileExistsCheck = await checkFileExistsInBlob(file.name)
+    // Ensure the Supabase bucket exists
+    await ensureResumeBucketExists()
     
-    let blobUrl: string
-    let blobPathname: string
+    // FIRST: Check if file already exists in Supabase storage
+    console.log("Checking if file already exists in Supabase storage...")
+    const fileExistsCheck = await SupabaseCandidateService.checkFileExistsInStorage(file)
     
-    if (fileExistsCheck.exists && fileExistsCheck.url && fileExistsCheck.pathname) {
-      console.log(`✅ File already exists in blob storage: ${file.name}`)
-      blobUrl = fileExistsCheck.url
-      blobPathname = fileExistsCheck.pathname
+    let fileUrl: string
+    let filePath: string
+    
+    if (fileExistsCheck.exists && fileExistsCheck.url && fileExistsCheck.path) {
+      console.log(`✅ File already exists in Supabase storage: ${file.name}`)
+      fileUrl = fileExistsCheck.url
+      filePath = fileExistsCheck.path
       
       // Check if this file is already associated with a candidate in the database
       console.log("Checking if file is already associated with a candidate...")
-      const existingCandidates = await getAllCandidates()
+      const existingCandidates = await SupabaseCandidateService.getAllCandidates()
       const existingCandidate = existingCandidates.find(c => 
-        c.driveFileUrl === blobUrl || c.fileName === file.name
+        c.fileUrl === fileUrl || c.fileName === file.name
       )
       
       if (existingCandidate) {
@@ -76,16 +87,16 @@ export async function POST(request: NextRequest) {
             existingId: existingCandidate.id,
             uploadedAt: existingCandidate.uploadedAt,
             reason: `File ${file.name} is already uploaded and associated with candidate ${existingCandidate.name}`,
-            blobUrl: blobUrl
+            fileUrl: fileUrl
           }
         }, { status: 409 })
       }
       
-      // File exists in blob but not associated with any candidate - we can reuse it
-      console.log("File exists in blob but not associated with any candidate - reusing existing file")
+      // File exists in Supabase storage but not associated with any candidate - we can reuse it
+      console.log("File exists in Supabase storage but not associated with any candidate - reusing existing file")
     } else {
-      // File doesn't exist in blob - need to parse and upload
-      console.log("File not found in blob storage - proceeding with parsing and upload...")
+      // File doesn't exist in Supabase storage - need to parse and upload
+      console.log("File not found in Supabase storage - proceeding with parsing and upload...")
       
       // Parse the resume to get candidate information
       console.log("Starting resume parsing...")
@@ -120,7 +131,7 @@ export async function POST(request: NextRequest) {
 
       // Check for duplicate resumes before processing
       console.log("Checking for duplicate resumes...")
-      const existingCandidates = await getAllCandidates()
+      const existingCandidates = await SupabaseCandidateService.getAllCandidates()
       
       // Check for duplicates based on multiple criteria
       const duplicateChecks = [
@@ -156,11 +167,13 @@ export async function POST(request: NextRequest) {
         }, { status: 409 })
       }
 
-      // Upload file to Vercel Blob
-      console.log("Uploading to Vercel Blob...")
-      const uploadResult = await uploadFileToBlob(file)
-      blobUrl = uploadResult.url
-      blobPathname = uploadResult.pathname
+      // Generate a unique ID for the candidate
+      const candidateId = crypto.randomUUID()
+
+      // Upload file to Supabase Storage
+      console.log("Uploading to Supabase Storage...")
+      fileUrl = await SupabaseCandidateService.uploadFile(file, candidateId)
+      filePath = fileUrl.split('/').pop() || ''
 
       // Generate embedding for vector search (optional)
       console.log("Generating embedding...")
@@ -173,7 +186,7 @@ export async function POST(request: NextRequest) {
         // Continue without embedding
       }
 
-      // Prepare candidate data for Google Sheets
+      // Prepare candidate data for Supabase
       const candidateData = {
         // Basic Information
         name: parsedData.name,
@@ -222,8 +235,8 @@ export async function POST(request: NextRequest) {
         // File Information
         resumeText: parsedData.resumeText,
         fileName: file.name,
-        driveFileId: blobPathname, // Storing pathname in Drive File ID column
-        driveFileUrl: blobUrl, // Storing URL in Drive File URL column
+        filePath: filePath, // Path in Supabase storage
+        fileUrl: fileUrl, // URL to access file in Supabase storage
 
         // System Fields
         status: "new",
@@ -235,11 +248,17 @@ export async function POST(request: NextRequest) {
         lastContacted: "",
         interviewStatus: "not-scheduled",
         feedback: "",
+        
+        // Parsing metadata
+        parsing_method: "gemini",
+        parsing_confidence: 0.95,
+        parsing_errors: [],
       }
 
-      // Add to Google Sheets
-      console.log("Adding to Google Sheets...")
-      const candidateId = await addCandidate(candidateData)
+      // Add to Supabase
+      console.log("Adding to Supabase...")
+      // We already generated candidateId earlier for the file upload
+      await SupabaseCandidateService.addCandidate(candidateData)
 
       console.log("=== Resume Upload Completed Successfully ===")
 
@@ -247,7 +266,7 @@ export async function POST(request: NextRequest) {
         success: true,
         candidateId,
         message: "Resume processed successfully",
-        driveFileUrl: blobUrl,
+        fileUrl: fileUrl,
         reusedExistingFile: false,
         ...parsedData,
       })
@@ -258,10 +277,10 @@ export async function POST(request: NextRequest) {
     console.log("Reusing existing file - parsing to create new candidate entry...")
     
     try {
-      // Download the existing file from blob storage to parse it
-      const response = await fetch(blobUrl)
+      // Download the existing file from Supabase storage to parse it
+      const response = await fetch(fileUrl)
       if (!response.ok) {
-        throw new Error(`Failed to download existing file from blob storage: ${response.status}`)
+        throw new Error(`Failed to download existing file from Supabase storage: ${response.status}`)
       }
       
       const blob = await response.blob()
@@ -284,13 +303,13 @@ export async function POST(request: NextRequest) {
       }
       
       // Parse the resume using the mock file object
-      console.log("Parsing existing file from blob storage...")
+      console.log("Parsing existing file from Supabase storage...")
       const parsedData = await parseResume(mockFile as any)
       console.log("✅ Resume parsing successful from existing file")
       
       // Check for duplicate resumes before processing
       console.log("Checking for duplicate resumes...")
-      const existingCandidates = await getAllCandidates()
+      const existingCandidates = await SupabaseCandidateService.getAllCandidates()
       
       const duplicateChecks = [
         existingCandidates.find(c => c.email && c.email.toLowerCase() === parsedData.email?.toLowerCase()),
@@ -332,7 +351,10 @@ export async function POST(request: NextRequest) {
         // Continue without embedding
       }
 
-      // Prepare candidate data for Google Sheets
+      // Generate a unique ID for the candidate
+      const candidateId = crypto.randomUUID()
+
+      // Prepare candidate data for Supabase
       const candidateData = {
         // Basic Information
         name: parsedData.name,
@@ -381,8 +403,8 @@ export async function POST(request: NextRequest) {
         // File Information
         resumeText: parsedData.resumeText,
         fileName: file.name,
-        driveFileId: blobPathname,
-        driveFileUrl: blobUrl,
+        filePath: filePath,
+        fileUrl: fileUrl,
 
         // System Fields
         status: "new",
@@ -394,11 +416,16 @@ export async function POST(request: NextRequest) {
         lastContacted: "",
         interviewStatus: "not-scheduled",
         feedback: "",
+        
+        // Parsing metadata
+        parsing_method: "gemini",
+        parsing_confidence: 0.95,
+        parsing_errors: [],
       }
 
-      // Add to Google Sheets
-      console.log("Adding to Google Sheets...")
-      const candidateId = await addCandidate(candidateData)
+      // Add to Supabase
+      console.log("Adding to Supabase...")
+      await SupabaseCandidateService.addCandidate(candidateData)
 
       console.log("=== Resume Upload Completed Successfully (Reused Existing File) ===")
 
@@ -406,20 +433,20 @@ export async function POST(request: NextRequest) {
         success: true,
         candidateId,
         message: "Resume processed successfully (reused existing file)",
-        driveFileUrl: blobUrl,
+        fileUrl: fileUrl,
         reusedExistingFile: true,
         ...parsedData,
       })
       
     } catch (parseError) {
-      console.error("❌ Failed to parse existing file from blob storage:", parseError)
+      console.error("❌ Failed to parse existing file from Supabase storage:", parseError)
       return NextResponse.json({
-        error: "Failed to parse existing file from blob storage",
+        error: "Failed to parse existing file from Supabase storage",
         details: parseError instanceof Error ? parseError.message : "Unknown error",
         fileName: file.name,
-        blobUrl: blobUrl,
+        fileUrl: fileUrl,
         suggestions: [
-          "The file may be corrupted in blob storage",
+          "The file may be corrupted in Supabase storage",
           "Try uploading the file again to replace the existing one",
           "Check if the file format is supported"
         ],

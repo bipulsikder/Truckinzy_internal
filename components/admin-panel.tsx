@@ -10,6 +10,7 @@ import { Users, FileText, TrendingUp, MapPin, Briefcase, Calendar, Download, Ref
 import { useToast } from "@/hooks/use-toast"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { CandidatePreviewDialog } from "./candidate-preview-dialog"
+import { logger } from "@/lib/logger"
 
 interface AdminStats {
   totalResumes: number
@@ -47,7 +48,7 @@ interface AdminStats {
     status: string
     email: string
     phone: string
-    driveFileUrl?: string
+    fileUrl?: string
     fileName?: string
     resumeText: string
     linkedinProfile?: string
@@ -82,7 +83,8 @@ export function AdminPanel() {
   const fetchStats = async () => {
     setLoading(true)
     try {
-      const response = await fetch(`/api/admin/stats?period=${filterPeriod}`)
+      // Use the Supabase API endpoint instead of Google Sheets
+      const response = await fetch(`/api/admin/stats-supabase?period=${filterPeriod}`)
       if (response.ok) {
         const data = await response.json()
 
@@ -106,7 +108,7 @@ export function AdminPanel() {
         throw new Error("Failed to fetch stats")
       }
     } catch (error) {
-      console.error("Failed to fetch stats:", error)
+      logger.error("Failed to fetch stats:", error)
       toast({
         title: "Error",
         description: "Failed to fetch analytics data",
@@ -119,7 +121,8 @@ export function AdminPanel() {
 
   const exportData = async (type: string) => {
     try {
-      const response = await fetch(`/api/admin/export?type=${type}`)
+      // Use the Supabase API endpoint instead of Google Sheets
+      const response = await fetch(`/api/admin/export-supabase?type=${type}`)
       if (response.ok) {
         const blob = await response.blob()
         const url = window.URL.createObjectURL(blob)
@@ -130,19 +133,14 @@ export function AdminPanel() {
         a.click()
         window.URL.revokeObjectURL(url)
         document.body.removeChild(a)
-        
-        toast({
-          title: "Export Successful",
-          description: `${type} data has been exported successfully.`,
-        })
       } else {
-        throw new Error("Export failed")
+        throw new Error("Failed to export data")
       }
     } catch (error) {
-      console.error("Export error:", error)
+      logger.error("Failed to export data:", error)
       toast({
-        title: "Export Failed",
-        description: "Failed to export data. Please try again.",
+        title: "Error",
+        description: "Failed to export data",
         variant: "destructive",
       })
     }
@@ -150,31 +148,31 @@ export function AdminPanel() {
 
   const realignAllData = async () => {
     try {
-      const response = await fetch("/api/admin/realign-all-data", {
+      // Use the Supabase API endpoint instead of Google Sheets
+      const response = await fetch("/api/admin/realign-all-data-supabase", {
         method: "POST",
         headers: {
-          "Authorization": "Bearer admin-token", // You can make this more secure
-          "Content-Type": "application/json"
-        }
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.NEXT_PUBLIC_ADMIN_TOKEN}`,
+        },
       })
-      
+
       if (response.ok) {
         const result = await response.json()
         toast({
-          title: "Data Realignment Successful",
-          description: "All candidate data has been realigned to proper columns.",
+          title: "Success",
+          description: result.message || "Data realignment completed successfully",
         })
-        
-        // Refresh stats to show updated data
+        // Refresh stats after realignment
         fetchStats()
       } else {
-        throw new Error("Realignment failed")
+        throw new Error("Failed to realign data")
       }
     } catch (error) {
-      console.error("Realignment error:", error)
+      logger.error("Failed to realign data:", error)
       toast({
-        title: "Data Realignment Failed",
-        description: "Failed to realign data. Please try again.",
+        title: "Error",
+        description: "Failed to realign data",
         variant: "destructive",
       })
     }
@@ -182,31 +180,31 @@ export function AdminPanel() {
 
   const restoreMissingProfiles = async () => {
     try {
-      const response = await fetch("/api/admin/restore-profiles", {
+      // Use the Supabase API endpoint instead of Google Sheets
+      const response = await fetch("/api/admin/restore-profiles-supabase", {
         method: "POST",
         headers: {
-          "Authorization": "Bearer admin-token", // You can make this more secure
-          "Content-Type": "application/json"
-        }
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.NEXT_PUBLIC_ADMIN_TOKEN}`,
+        },
       })
-      
+
       if (response.ok) {
         const result = await response.json()
         toast({
-          title: "Profile Restoration Successful",
-          description: `${result.result.restored} profiles were restored.`,
+          title: "Success",
+          description: result.message || "Profile restoration process completed",
         })
-        
-        // Refresh stats to show updated data
+        // Refresh stats after restoration
         fetchStats()
       } else {
-        throw new Error("Profile restoration failed")
+        throw new Error("Failed to restore profiles")
       }
     } catch (error) {
-      console.error("Profile restoration error:", error)
+      logger.error("Failed to restore profiles:", error)
       toast({
-        title: "Profile Restoration Failed",
-        description: "Failed to restore profiles. Please try again.",
+        title: "Error",
+        description: "Failed to restore missing profiles",
         variant: "destructive",
       })
     }
@@ -241,7 +239,7 @@ export function AdminPanel() {
         throw new Error("Failed to update status")
       }
     } catch (error) {
-      console.error("Status update failed:", error)
+      logger.error("Status update failed:", error)
       toast({
         title: "Error",
         description: "Failed to update candidate status",
@@ -280,7 +278,7 @@ export function AdminPanel() {
         throw new Error("Failed to update notes")
       }
     } catch (error) {
-      console.error("Notes update failed:", error)
+      logger.error("Notes update failed:", error)
       toast({
         title: "Error",
         description: "Failed to update notes",
@@ -319,7 +317,7 @@ export function AdminPanel() {
         throw new Error("Failed to update rating")
       }
     } catch (error) {
-      console.error("Rating update failed:", error)
+      logger.error("Rating update failed:", error)
       toast({
         title: "Error",
         description: "Failed to update rating",
@@ -380,7 +378,7 @@ export function AdminPanel() {
       certifications: Array.isArray(upload.certifications) ? upload.certifications : [],
       resumeText: upload.resumeText || "",
       fileName: upload.fileName || "",
-      driveFileUrl: upload.driveFileUrl || "",
+      fileUrl: upload.fileUrl || "",
       tags: Array.isArray(upload.tags) ? upload.tags : [],
       status: upload.status || "new",
       rating: upload.rating || 0,

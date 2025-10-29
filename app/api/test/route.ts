@@ -1,11 +1,19 @@
-import { NextResponse } from "next/server"
-import { put } from "@vercel/blob"
+import { NextRequest, NextResponse } from "next/server"
 import { GoogleGenerativeAI } from "@google/generative-ai"
 import { generateEmbedding } from "@/lib/ai-utils"
 import { realignSpreadsheetData, cleanupSpreadsheetData } from "@/lib/google-sheets"
+import { supabase } from "@/lib/supabase"
 
-export async function GET(request: Request) {
-  const results = {
+export async function GET(request: NextRequest) {
+  // Authorization: require login cookie or valid admin token
+  const authCookie = request.cookies.get("auth")?.value
+  const authHeader = request.headers.get("authorization")
+  const hasAdminToken = authHeader === `Bearer ${process.env.ADMIN_TOKEN}`
+  if (authCookie !== "true" && !hasAdminToken) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  const results: any = {
     timestamp: new Date().toISOString(),
     environment: {
       nodeEnv: process.env.NODE_ENV,
@@ -16,10 +24,13 @@ export async function GET(request: Request) {
         process.env.GOOGLE_PRIVATE_KEY &&
         process.env.GOOGLE_SPREADSHEET_ID
       ),
-      vercelBlobConfigured: !!process.env.BLOB_READ_WRITE_TOKEN,
+      supabaseConfigured: !!(
+        process.env.NEXT_PUBLIC_SUPABASE_URL &&
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      ),
     },
     googleSheets: "❌ Not tested",
-    vercelBlob: "❌ Not tested",
+    supabaseStorage: "❌ Not tested",
     gemini: "❌ Not tested",
     affinda: "❌ Not tested",
     embedding: "❌ Not tested",
@@ -34,15 +45,32 @@ export async function GET(request: Request) {
     results.googleSheets = `❌ Failed: ${error instanceof Error ? error.message : "Unknown error"}`
   }
 
-  // Test Vercel Blob
+  // Test Supabase Storage
   try {
-    const testContent = `Test blob upload at ${new Date().toISOString()}`
-    const blob = await put("test-blob-upload.txt", testContent, {
-      access: "public",
-    })
-    results.vercelBlob = `✅ Working (Uploaded: ${blob.pathname})`
+    const testContent = `Test Supabase storage upload at ${new Date().toISOString()}`
+    const testFile = new File([testContent], "test-supabase-upload.txt", { type: "text/plain" })
+    
+    // Ensure bucket exists
+    const { data: buckets } = await supabase.storage.listBuckets()
+    if (!buckets?.some(bucket => bucket.name === 'resume-files')) {
+      await supabase.storage.createBucket('resume-files', { public: true })
+    }
+    
+    // Upload test file
+    const { data, error } = await supabase.storage
+      .from('resume-files')
+      .upload(`test-${Date.now()}.txt`, testFile)
+      
+    if (error) throw error
+    
+    // Get public URL
+    const { data: { publicUrl } } = supabase.storage
+      .from('resume-files')
+      .getPublicUrl(data.path)
+      
+    results.supabaseStorage = `✅ Working (Uploaded: ${data.path}, URL: ${publicUrl})`
   } catch (error) {
-    results.vercelBlob = `❌ Failed: ${error instanceof Error ? error.message : "Unknown error"}`
+    results.supabaseStorage = `❌ Failed: ${error instanceof Error ? error.message : "Unknown error"}`
   }
 
   // Test Gemini

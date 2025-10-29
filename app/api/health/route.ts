@@ -1,7 +1,15 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { testGoogleSheetsConnection } from "@/lib/google-sheets"
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // Authorization: require login cookie or valid admin token
+  const authCookie = request.cookies.get("auth")?.value
+  const authHeader = request.headers.get("authorization")
+  const hasAdminToken = authHeader === `Bearer ${process.env.ADMIN_TOKEN}`
+  if (authCookie !== "true" && !hasAdminToken) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
   try {
     console.log("=== Health Check Started ===")
     

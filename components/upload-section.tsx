@@ -24,6 +24,7 @@ import {
   FileCheck,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
+import { logger } from "@/lib/logger"
 
 interface UploadedFile {
   file: File
@@ -55,7 +56,7 @@ export function UploadSection() {
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
-      console.log("Files dropped:", acceptedFiles.length)
+      logger.info("Files dropped:", acceptedFiles.length)
 
       if (acceptedFiles.length === 0) {
         toast({
@@ -100,7 +101,7 @@ export function UploadSection() {
   )
 
   const processFile = async (file: File, index: number) => {
-    console.log(`Processing file ${index}: ${file.name}`)
+    logger.info(`Processing file ${index}: ${file.name}`)
 
     try {
       // Update status to processing
@@ -109,7 +110,7 @@ export function UploadSection() {
       const formData = new FormData()
       formData.append("resume", file)
 
-      console.log(`Uploading file: ${file.name}, size: ${file.size}, type: ${file.type}`)
+      logger.info(`Uploading file: ${file.name}, size: ${file.size}, type: ${file.type}`)
 
       // Simulate upload progress
       const progressInterval = setInterval(() => {
@@ -125,10 +126,10 @@ export function UploadSection() {
 
       clearInterval(progressInterval)
 
-      console.log(`Upload response status: ${response.status}`)
+      logger.info(`Upload response status: ${response.status}`)
 
       const result = await response.json()
-      console.log("Upload result:", result)
+      logger.info("Upload result:", result)
 
       if (!response.ok) {
         // Check if it's a duplicate error
@@ -191,14 +192,14 @@ export function UploadSection() {
         prev.map((f, i) => (i === index ? { ...f, status: "completed", progress: 100, result } : f)),
       )
 
-      console.log(`✅ Successfully processed: ${file.name}`)
+      logger.info(`✅ Successfully processed: ${file.name}`)
 
       toast({
         title: "Success",
         description: `${file.name} processed successfully`,
       })
     } catch (error) {
-      console.error(`❌ Error processing ${file.name}:`, error)
+      logger.error(`❌ Error processing ${file.name}:`, error)
 
       // Update status to error
       setUploadedFiles((prev) =>
@@ -432,7 +433,7 @@ export function UploadSection() {
                           <RefreshCw className="h-4 w-4" />
                         </Button>
                       )}
-                      {uploadedFile.result?.driveFileUrl && (
+                      {uploadedFile.result?.fileUrl && (
                         <>
                           <Dialog>
                             <DialogTrigger asChild>
@@ -446,13 +447,13 @@ export function UploadSection() {
                               </DialogHeader>
                               <div className="space-y-4">
                                 <iframe
-                                  src={uploadedFile.result.driveFileUrl}
+                                  src={uploadedFile.result.fileUrl}
                                   className="w-full h-96 border rounded"
                                   title="Resume Preview"
                                 />
                                 <div className="flex justify-end">
                                   <Button asChild>
-                                    <a href={uploadedFile.result.driveFileUrl} download={uploadedFile.file.name}>
+                                    <a href={uploadedFile.result.fileUrl} download={uploadedFile.file.name}>
                                       <Download className="h-4 w-4 mr-2" />
                                       Download
                                     </a>
@@ -462,7 +463,7 @@ export function UploadSection() {
                             </DialogContent>
                           </Dialog>
                           <Button variant="outline" size="sm" asChild>
-                            <a href={uploadedFile.result.driveFileUrl} download={uploadedFile.file.name}>
+                            <a href={uploadedFile.result.fileUrl} download={uploadedFile.file.name}>
                               <Download className="h-4 w-4" />
                             </a>
                           </Button>

@@ -11,6 +11,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { createPreviewUrl, isDocxFile } from "@/lib/file-preview-utils"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -48,6 +49,8 @@ import {
   BookOpen,
   Trophy,
   Zap,
+  CheckCircle,
+  Info,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
@@ -90,7 +93,7 @@ interface CandidateData {
   }>
   resumeText: string
   fileName: string
-  driveFileUrl: string
+  fileUrl: string
   tags: string[]
   status: "new" | "reviewed" | "shortlisted" | "interviewed" | "selected" | "rejected" | "on-hold"
   rating?: number
@@ -100,6 +103,7 @@ interface CandidateData {
   notes?: string
   relevanceScore?: number
   matchingKeywords?: string[]
+  matchPercentage?: number
 }
 
 interface CandidatePreviewDialogProps {
@@ -127,6 +131,7 @@ export function CandidatePreviewDialog({
   const [notes, setNotes] = useState("")
   const [rating, setRating] = useState(candidate?.rating || undefined)
   const [isUpdating, setIsUpdating] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState<string>("") // State for the preview URL
   const { toast } = useToast()
 
   // Initialize state when candidate changes
@@ -134,6 +139,25 @@ export function CandidatePreviewDialog({
     if (candidate) {
       setNotes(candidate.notes || "")
       setRating(candidate.rating || undefined)
+      
+      // Generate preview URL for DOCX files
+      const generatePreviewUrl = async () => {
+        if (candidate.fileUrl && candidate.fileName) {
+          if (isDocxFile(candidate.fileUrl, candidate.fileName)) {
+            try {
+              const url = await createPreviewUrl(candidate.fileUrl, candidate.fileName);
+              setPreviewUrl(url);
+            } catch (error) {
+              console.error('Error generating preview URL:', error);
+              setPreviewUrl(candidate.fileUrl); // Fallback to original URL
+            }
+          } else {
+            setPreviewUrl(candidate.fileUrl); // Use original URL for non-DOCX files
+          }
+        }
+      };
+      
+      generatePreviewUrl();
     }
   }, [candidate])
 
@@ -165,6 +189,57 @@ export function CandidatePreviewDialog({
       "on-hold": "bg-gray-100 text-gray-800 border-gray-200",
     }
     return colors[status as keyof typeof colors] || colors.new
+  }
+
+  // Utility helpers to fix reference errors and standardize display
+  const formatDate = (value: any): string => {
+    if (!value) return "N/A"
+    if (typeof value === "string") {
+      const trimmed = value.trim()
+      // Year-only strings
+      if (/^\d{4}$/.test(trimmed)) return trimmed
+      // Try parsing standard date strings
+      const d = new Date(trimmed)
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleDateString("en-GB", { month: "short", year: "numeric" })
+      }
+      return trimmed
+    }
+    try {
+      const d = new Date(value)
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleDateString("en-GB", { month: "short", year: "numeric" })
+      }
+    } catch {}
+    return String(value)
+  }
+
+  const getMatchQuality = (percent: number): string => {
+    const p = Math.max(0, Math.min(100, Math.round(percent || 0)))
+    if (p >= 80) return "High"
+    if (p >= 60) return "Medium"
+    return "Low"
+  }
+
+  const getPrimaryMatchArea = (cand: typeof safeCandidate): string => {
+    const kws = (cand.matchingKeywords || []).map(k => k.toLowerCase())
+    if (kws.length === 0) return "General profile"
+
+    const areas: string[] = []
+    const textIncludes = (text?: string) => {
+      const lower = (text || "").toLowerCase()
+      return kws.some(k => k && lower.includes(k))
+    }
+
+    if (textIncludes(cand.currentRole) || textIncludes(cand.desiredRole)) areas.push("Role")
+    if ((cand.technicalSkills || []).some(s => kws.some(k => (s || "").toLowerCase().includes(k)))) areas.push("Skills")
+    if ((cand.softSkills || []).some(s => kws.some(k => (s || "").toLowerCase().includes(k)))) areas.push("Soft skills")
+    if (textIncludes(cand.currentCompany)) areas.push("Company")
+    if (textIncludes(cand.summary)) areas.push("Summary")
+    if (textIncludes(cand.resumeText)) areas.push("Resume text")
+
+    const uniqueAreas = Array.from(new Set(areas))
+    return uniqueAreas.length > 0 ? uniqueAreas.join(", ") : "General profile"
   }
 
   const getInitials = (name: string) => {
@@ -454,11 +529,14 @@ export function CandidatePreviewDialog({
                       <div className="p-3 bg-gray-50 rounded-lg">
                         <p className="text-sm font-medium text-gray-700">Uploaded</p>
                         <p className="text-gray-800 font-medium">
-                          {new Date(safeCandidate.uploadedAt).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'long',
-                            day: 'numeric',
-                          })}
+                          {safeCandidate.uploadedAt && !isNaN(new Date(safeCandidate.uploadedAt).getTime()) 
+                            ? new Date(safeCandidate.uploadedAt).toLocaleDateString('en-US', {
+                                year: 'numeric',
+                                month: 'long',
+                                day: 'numeric',
+                              })
+                            : "Not specified"
+                          }
                         </p>
                       </div>
                       <div className="p-3 bg-gray-50 rounded-lg">
@@ -598,10 +676,10 @@ export function CandidatePreviewDialog({
                         <p className="text-gray-800 font-medium mt-1 break-all">{safeCandidate.fileName}</p>
                       </div>
                       <div className="p-4 bg-gray-50 rounded-lg">
-                        <p className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Drive File URL</p>
-                        {safeCandidate.driveFileUrl ? (
+                        <p className="text-sm font-semibold text-gray-700 uppercase tracking-wide">File URL</p>
+                        {safeCandidate.fileUrl ? (
                           <a
-                            href={safeCandidate.driveFileUrl}
+                            href={safeCandidate.fileUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-blue-600 hover:underline font-medium mt-1 block break-all"
@@ -615,7 +693,10 @@ export function CandidatePreviewDialog({
                       <div className="p-4 bg-gray-50 rounded-lg">
                         <p className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Uploaded Date</p>
                         <p className="text-gray-800 font-medium mt-1">
-                          {new Date(safeCandidate.uploadedAt).toLocaleString()}
+                          {safeCandidate.uploadedAt && !isNaN(new Date(safeCandidate.uploadedAt).getTime()) 
+                            ? new Date(safeCandidate.uploadedAt).toLocaleString()
+                            : "Not specified"
+                          }
                         </p>
                       </div>
                     </CardContent>
@@ -651,8 +732,8 @@ export function CandidatePreviewDialog({
                               
                               {/* Experience content */}
                               <div className="flex-1 bg-white border-2 border-blue-100 rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow">
-                                <div className="flex justify-between items-start mb-4">
-                                  <div className="flex-1">
+                                <div className="flex flex-col md:flex-row md:justify-between md:items-start mb-4">
+                                  <div className="flex-1 mb-3 md:mb-0">
                                     <h3 className="text-2xl font-bold text-gray-800 mb-2">{experience.role}</h3>
                                     <p className="text-xl text-blue-600 font-semibold mb-1">{experience.company}</p>
                                   </div>
@@ -682,14 +763,16 @@ export function CandidatePreviewDialog({
                                       <Target className="h-5 w-5 mr-2" />
                                       Key Responsibilities
                                     </h4>
-                                    <ul className="space-y-2">
-                                      {experience.responsibilities.map((responsibility, respIndex) => (
-                                        <li key={respIndex} className="flex items-start">
-                                          <span className="text-blue-500 mr-3 mt-1">•</span>
-                                          <span className="text-gray-700 leading-relaxed">{responsibility}</span>
-                                        </li>
-                                      ))}
-                                    </ul>
+                                    <div className="bg-blue-50 rounded-lg p-4 border-l-4 border-blue-300">
+                                      <ul className="space-y-2">
+                                        {experience.responsibilities.map((responsibility, respIndex) => (
+                                          <li key={respIndex} className="flex items-start">
+                                            <span className="text-blue-500 mr-3 mt-1">•</span>
+                                            <span className="text-gray-700 leading-relaxed">{responsibility}</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
                                   </div>
                                 )}
 
@@ -699,14 +782,16 @@ export function CandidatePreviewDialog({
                                       <Trophy className="h-5 w-5 mr-2" />
                                       Key Achievements
                                     </h4>
-                                    <ul className="space-y-2">
-                                      {experience.achievements.map((achievement, achIndex) => (
-                                        <li key={achIndex} className="flex items-start">
-                                          <span className="text-green-500 mr-3 mt-1">★</span>
-                                          <span className="text-gray-700 leading-relaxed">{achievement}</span>
-                                        </li>
-                                      ))}
-                                    </ul>
+                                    <div className="bg-green-50 rounded-lg p-4 border-l-4 border-green-300">
+                                      <ul className="space-y-2">
+                                        {experience.achievements.map((achievement, achIndex) => (
+                                          <li key={achIndex} className="flex items-start">
+                                            <span className="text-green-500 mr-3 mt-1">★</span>
+                                            <span className="text-gray-700 leading-relaxed">{achievement}</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
                                   </div>
                                 )}
 
@@ -716,12 +801,14 @@ export function CandidatePreviewDialog({
                                       <Code className="h-5 w-5 mr-2" />
                                       Technologies Used
                                     </h4>
-                                    <div className="flex flex-wrap gap-2">
-                                      {experience.technologies.map((tech, techIndex) => (
-                                        <Badge key={techIndex} variant="outline" className="bg-purple-50 border-purple-200 text-purple-700">
-                                          {tech}
-                                        </Badge>
-                                      ))}
+                                    <div className="bg-purple-50 rounded-lg p-4 border-l-4 border-purple-300">
+                                      <div className="flex flex-wrap gap-2">
+                                        {experience.technologies.map((tech, techIndex) => (
+                                          <Badge key={techIndex} variant="outline" className="bg-white border-purple-200 text-purple-700">
+                                            {tech}
+                                          </Badge>
+                                        ))}
+                                      </div>
                                     </div>
                                   </div>
                                 )}
@@ -846,8 +933,8 @@ export function CandidatePreviewDialog({
                               
                               {/* Education content */}
                               <div className="flex-1 bg-white border-2 border-green-100 rounded-xl p-6 shadow-sm hover:shadow-md transition-shadow">
-                                <div className="flex justify-between items-start mb-4">
-                                  <div className="flex-1">
+                                <div className="flex flex-col md:flex-row md:justify-between md:items-start mb-4">
+                                  <div className="flex-1 mb-3 md:mb-0">
                                     <h3 className="text-2xl font-bold text-gray-800 mb-2">{edu.degree}</h3>
                                     {edu.specialization && (
                                       <p className="text-xl text-green-600 font-semibold mb-2">{edu.specialization}</p>
@@ -855,32 +942,44 @@ export function CandidatePreviewDialog({
                                     <p className="text-lg text-gray-600 font-medium">{edu.institution}</p>
                                   </div>
                                   <div className="text-right space-y-2">
-                                    {edu.year && (
-                                      <div className="flex items-center space-x-2">
-                                        <Calendar className="h-5 w-5 text-gray-500" />
-                                        <Badge variant="outline" className="text-base px-3 py-1 bg-green-50 border-green-200 text-green-700 font-medium">
-                                          {edu.year}
-                                        </Badge>
-                                      </div>
-                                    )}
-                                    {edu.percentage && (
-                                      <div className="flex items-center space-x-2">
-                                        <Zap className="h-5 w-5 text-gray-500" />
-                                        <Badge className="bg-yellow-100 text-yellow-800 text-sm font-semibold">
-                                          {edu.percentage}
+                                    <div className="flex items-center space-x-2 justify-end">
+                                      <Calendar className="h-5 w-5 text-gray-500" />
+                                      <Badge variant="outline" className="text-base px-3 py-1 bg-green-50 border-green-200 text-green-700 font-medium">
+                                        {(edu as any).startDate || (edu as any).endDate 
+                                          ? `${formatDate((edu as any).startDate)} - ${formatDate((edu as any).endDate)}`
+                                          : (edu as any).year || 'N/A'}
+                                      </Badge>
+                                    </div>
+                                    {(edu as any).percentage && (
+                                      <div className="flex items-center space-x-2 justify-end">
+                                        <Zap className="h-5 w-5 text-amber-500" />
+                                        <Badge className="bg-amber-100 text-amber-800 text-sm font-semibold">
+                                          Score: {(edu as any).percentage}
                                         </Badge>
                                       </div>
                                     )}
                                     {edu.grade && (
-                                      <div className="flex items-center space-x-2">
-                                        <Star className="h-5 w-5 text-gray-500" />
+                                      <div className="flex items-center space-x-2 justify-end">
+                                        <Star className="h-5 w-5 text-blue-500" />
                                         <Badge className="bg-blue-100 text-blue-800 text-sm font-semibold">
-                                          {edu.grade}
+                                          Grade: {edu.grade}
                                         </Badge>
                                       </div>
                                     )}
                                   </div>
                                 </div>
+
+                                {(edu as any).description && (
+                                  <div className="mb-4">
+                                    <h4 className="text-lg font-semibold text-gray-700 mb-2 flex items-center">
+                                      <FileText className="h-5 w-5 mr-2" />
+                                      Additional Information
+                                    </h4>
+                                    <div className="bg-green-50 rounded-lg p-4 border-l-4 border-green-300">
+                                      <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">{(edu as any).description}</p>
+                                    </div>
+                                  </div>
+                                )}
 
                                 {edu.coursework && edu.coursework.length > 0 && (
                                   <div className="mb-4">
@@ -888,12 +987,14 @@ export function CandidatePreviewDialog({
                                       <BookOpen className="h-5 w-5 mr-2" />
                                       Key Coursework
                                     </h4>
-                                    <div className="flex flex-wrap gap-2">
-                                      {edu.coursework.map((course, courseIndex) => (
-                                        <Badge key={courseIndex} variant="outline" className="bg-blue-50 border-blue-200 text-blue-700 text-sm">
-                                          {course}
-                                        </Badge>
-                                      ))}
+                                    <div className="bg-blue-50 rounded-lg p-4 border-l-4 border-blue-300">
+                                      <div className="flex flex-wrap gap-2">
+                                        {(edu as any).coursework.map((course: string, courseIndex: number) => (
+                                          <Badge key={courseIndex} variant="outline" className="bg-white border-blue-200 text-blue-700 text-sm">
+                                            {course}
+                                          </Badge>
+                                        ))}
+                                      </div>
                                     </div>
                                   </div>
                                 )}
@@ -904,14 +1005,35 @@ export function CandidatePreviewDialog({
                                       <Code className="h-5 w-5 mr-2" />
                                       Academic Projects
                                     </h4>
-                                    <ul className="space-y-2">
-                                      {edu.projects.map((project, projIndex) => (
-                                        <li key={projIndex} className="flex items-start">
-                                          <span className="text-green-500 mr-3 mt-1">▶</span>
-                                          <span className="text-gray-700 leading-relaxed">{project}</span>
-                                        </li>
-                                      ))}
-                                    </ul>
+                                    <div className="bg-purple-50 rounded-lg p-4 border-l-4 border-purple-300">
+                                      <ul className="space-y-2">
+                                        {(edu as any).projects.map((project: string, projIndex: number) => (
+                                          <li key={projIndex} className="flex items-start">
+                                            <span className="text-purple-500 mr-3 mt-1">▶</span>
+                                            <span className="text-gray-700 leading-relaxed">{project}</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  </div>
+                                )}
+                                
+                                {(edu as any).achievements && (edu as any).achievements.length > 0 && (
+                                  <div className="mt-4">
+                                    <h4 className="text-lg font-semibold text-gray-700 mb-2 flex items-center">
+                                      <Trophy className="h-5 w-5 mr-2" />
+                                      Academic Achievements
+                                    </h4>
+                                    <div className="bg-amber-50 rounded-lg p-4 border-l-4 border-amber-300">
+                                      <ul className="space-y-2">
+                                        {(edu as any).achievements.map((achievement: string, achIndex: number) => (
+                                          <li key={achIndex} className="flex items-start">
+                                            <span className="text-amber-500 mr-3 mt-1">★</span>
+                                            <span className="text-gray-700 leading-relaxed">{achievement}</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
                                   </div>
                                 )}
                               </div>
@@ -1003,12 +1125,46 @@ export function CandidatePreviewDialog({
                               <div className="flex-1 bg-gray-200 rounded-full h-4">
                                 <div
                                   className="bg-gradient-to-r from-blue-500 to-green-500 h-4 rounded-full transition-all duration-500 shadow-inner"
-                                  style={{ width: `${safeCandidate.relevanceScore * 100}%` }}
+                                  style={{ width: `${safeCandidate.matchPercentage || Math.round(safeCandidate.relevanceScore * 100)}%` }}
                                 />
                               </div>
                               <span className="font-bold text-xl text-gray-800">
-                                {Math.round(safeCandidate.relevanceScore * 100)}%
+                                {safeCandidate.matchPercentage || Math.round(safeCandidate.relevanceScore * 100)}%
                               </span>
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Keyword Match Categories */}
+                        {safeCandidate.matchingKeywords && safeCandidate.matchingKeywords.length > 0 && (
+                          <div>
+                            <h4 className="font-semibold text-gray-800 mb-3 text-lg">Keyword Match Analysis</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+                                <h5 className="text-sm font-medium text-gray-700 mb-2 flex items-center">
+                                  <CheckCircle className="h-4 w-4 mr-1 text-green-600" />
+                                  Exact Matches
+                                </h5>
+                                <div className="flex flex-wrap gap-2">
+                                  {safeCandidate.matchingKeywords.map((keyword, index) => (
+                                    <Badge key={index} variant="default" className="bg-green-600 text-white px-3 py-1 shadow-sm">
+                                      {keyword}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              </div>
+                              
+                              <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+                                <h5 className="text-sm font-medium text-gray-700 mb-2 flex items-center">
+                                  <Info className="h-4 w-4 mr-1 text-blue-600" />
+                                  Match Details
+                                </h5>
+                                <ul className="text-sm space-y-1 text-gray-600">
+                                  <li>• {safeCandidate.matchingKeywords.length} keywords matched</li>
+                                  <li>• Match quality: {getMatchQuality(safeCandidate.matchPercentage || Math.round(safeCandidate.relevanceScore * 100))}</li>
+                                  <li>• Primary matches: {getPrimaryMatchArea(safeCandidate)}</li>
+                                </ul>
+                              </div>
                             </div>
                           </div>
                         )}
@@ -1019,7 +1175,7 @@ export function CandidatePreviewDialog({
               </TabsContent>
 
               <TabsContent value="resume" className="space-y-6">
-                {safeCandidate.driveFileUrl ? (
+                {safeCandidate.fileUrl ? (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-full">
                     <Card className="shadow-md">
                       <CardHeader>
@@ -1030,13 +1186,13 @@ export function CandidatePreviewDialog({
                           </span>
                           <div className="flex space-x-2">
                             <Button variant="outline" size="sm" asChild className="hover:bg-blue-50">
-                              <a href={safeCandidate.driveFileUrl} target="_blank" rel="noopener noreferrer">
+                              <a href={safeCandidate.fileUrl} target="_blank" rel="noopener noreferrer">
                                 <ExternalLink className="h-4 w-4 mr-2" />
                                 Open Full
                               </a>
                             </Button>
                             <Button variant="outline" size="sm" asChild className="hover:bg-green-50">
-                              <a href={safeCandidate.driveFileUrl} download={safeCandidate.fileName}>
+                              <a href={safeCandidate.fileUrl} download={safeCandidate.fileName}>
                                 <Download className="h-4 w-4 mr-2" />
                                 Download
                               </a>
@@ -1047,7 +1203,7 @@ export function CandidatePreviewDialog({
                       <CardContent>
                         <div className="border-2 border-gray-200 rounded-lg overflow-hidden">
                           <iframe
-                            src={safeCandidate.driveFileUrl}
+                            src={previewUrl || safeCandidate.fileUrl}
                             className="w-full h-[500px]"
                             title="Resume Preview"
                           />
@@ -1212,9 +1368,9 @@ export function CandidatePreviewDialog({
                           Call
                         </a>
                       </Button>
-                      {safeCandidate.driveFileUrl && (
+                      {safeCandidate.fileUrl && (
                         <Button variant="outline" asChild className="h-12 hover:bg-purple-50">
-                          <a href={safeCandidate.driveFileUrl} download={safeCandidate.fileName}>
+                          <a href={safeCandidate.fileUrl} download={safeCandidate.fileName}>
                             <Download className="h-5 w-5 mr-2" />
                             Download
                           </a>

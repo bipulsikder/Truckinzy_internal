@@ -12,6 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Label } from "@/components/ui/label"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { logger } from "@/lib/logger"
 import {
   Search,
   Sparkles,
@@ -61,7 +62,7 @@ interface SearchResult {
   certifications?: string[]
   relevanceScore: number
   matchingKeywords: string[]
-  driveFileUrl?: string
+  fileUrl?: string
   fileName?: string
   summary?: string
   linkedinProfile?: string
@@ -77,6 +78,8 @@ interface SearchResult {
   gender?: string
   age?: number
   maritalStatus?: string
+  notes?: string
+  rating?: number
   tags?: string[]
 }
 
@@ -162,6 +165,10 @@ export function SmartSearch() {
   // Client-side pagination
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  // Server-side pagination state
+  const [serverPaginated, setServerPaginated] = useState(false)
+  const [totalResultsServer, setTotalResultsServer] = useState(0)
+  const [lastSearchPayload, setLastSearchPayload] = useState<any | null>(null)
 
   const { toast } = useToast()
 
@@ -299,7 +306,7 @@ export function SmartSearch() {
         setAiSuggestions(suggestions.slice(0, 6)) // Show max 6 suggestions
       }
     } catch (error) {
-      console.error("Failed to get AI suggestions:", error)
+      logger.error("Failed to get AI suggestions:", error)
     } finally {
       setIsLoadingSuggestions(false)
     }
@@ -332,26 +339,36 @@ export function SmartSearch() {
 
     setIsSearching(true)
     setHasSearched(true)
+    setCurrentPage(1)
+    const payload = {
+      query: smartSearchQuery,
+      searchType: "smart",
+      paginate: true,
+      page: 1,
+      perPage: pageSize,
+    }
+    setLastSearchPayload(payload)
     try {
       const response = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: smartSearchQuery,
-          searchType: "smart",
-        }),
+        body: JSON.stringify(payload),
       })
 
       if (!response.ok) throw new Error("Search failed")
 
-      const results = await response.json()
-      setSearchResults(processSearchResults(results))
+      const data = await response.json()
+      const items = Array.isArray(data) ? data : (data.items || [])
+      const total = Array.isArray(data) ? items.length : (data.total || items.length)
+      setServerPaginated(!Array.isArray(data))
+      setTotalResultsServer(total)
+      setSearchResults(processSearchResults(items))
       toast({
         title: "Search Complete",
-        description: `Found ${results.length} matching candidates`,
+        description: `Found ${total} matching candidates`,
       })
     } catch (error) {
-      console.error("Search error:", error)
+      logger.error("Search error:", error)
       toast({
         title: "Error",
         description: "Search failed. Please try again.",
@@ -375,26 +392,36 @@ export function SmartSearch() {
 
     setIsSearching(true)
     setHasSearched(true)
+    setCurrentPage(1)
+    const payload = {
+      jobDescription: jobDescription,
+      searchType: "jd",
+      paginate: true,
+      page: 1,
+      perPage: pageSize,
+    }
+    setLastSearchPayload(payload)
     try {
       const response = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jobDescription: jobDescription,
-          searchType: "jd",
-        }),
+        body: JSON.stringify(payload),
       })
 
       if (!response.ok) throw new Error("JD Search failed")
 
-      const results = await response.json()
-      setSearchResults(processSearchResults(results))
+      const data = await response.json()
+      const items = Array.isArray(data) ? data : (data.items || [])
+      const total = Array.isArray(data) ? items.length : (data.total || items.length)
+      setServerPaginated(!Array.isArray(data))
+      setTotalResultsServer(total)
+      setSearchResults(processSearchResults(items))
       toast({
         title: "JD Analysis Complete",
-        description: `Found ${results.length} candidates matching the job requirements`,
+        description: `Found ${total} candidates matching the job requirements`,
       })
     } catch (error) {
-      console.error("JD Search error:", error)
+      logger.error("JD Search error:", error)
       toast({
         title: "Error",
         description: "JD analysis failed. Please try again.",
@@ -418,26 +445,36 @@ export function SmartSearch() {
 
     setIsSearching(true)
     setHasSearched(true)
+    setCurrentPage(1)
+    const payload = {
+      searchType: "manual",
+      filters: manualFilters,
+      paginate: true,
+      page: 1,
+      perPage: pageSize,
+    }
+    setLastSearchPayload(payload)
     try {
       const response = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          searchType: "manual",
-          filters: manualFilters,
-        }),
+        body: JSON.stringify(payload),
       })
 
       if (!response.ok) throw new Error("Manual search failed")
 
-      const results = await response.json()
-      setSearchResults(processSearchResults(results))
+      const data = await response.json()
+      const items = Array.isArray(data) ? data : (data.items || [])
+      const total = Array.isArray(data) ? items.length : (data.total || items.length)
+      setServerPaginated(!Array.isArray(data))
+      setTotalResultsServer(total)
+      setSearchResults(processSearchResults(items))
       toast({
         title: "Search Complete",
-        description: `Found ${results.length} matching candidates`,
+        description: `Found ${total} matching candidates`,
       })
     } catch (error) {
-      console.error("Manual search error:", error)
+      logger.error("Manual search error:", error)
       toast({
         title: "Error",
         description: "Search failed. Please try again.",
@@ -470,21 +507,29 @@ export function SmartSearch() {
   const openPreview = async (candidate: SearchResult) => {
     try {
       setIsPreviewLoading(true)
-      // Prefer server details, fetch by id if available
+      // Fetch complete candidate data from the individual candidate API
       const id = candidate._id || candidate.id
       if (id) {
         const res = await fetch(`/api/candidates/${id}`)
         if (res.ok) {
-          const full = await res.json()
-          // Merge to preserve relevance/matches if returned object lacks them
-          setSelectedCandidate({ ...candidate, ...full })
+          const fullCandidateData = await res.json()
+          // Preserve search-specific fields while using the complete candidate data
+          const mergedCandidate = {
+            ...fullCandidateData,
+            relevanceScore: candidate.relevanceScore,
+            matchingKeywords: candidate.matchingKeywords,
+          }
+          setSelectedCandidate(mergedCandidate)
         } else {
+          // Fallback to search result data if API call fails
           setSelectedCandidate(candidate)
         }
       } else {
         setSelectedCandidate(candidate)
       }
     } catch (e) {
+      logger.error("Error fetching candidate details:", e)
+      // Fallback to search result data if there's an error
       setSelectedCandidate(candidate)
     } finally {
       setIsPreviewLoading(false)
@@ -546,10 +591,68 @@ export function SmartSearch() {
         if (selectedCandidate && (selectedCandidate._id === candidateId || selectedCandidate.id === candidateId)) {
           setSelectedCandidate({ ...selectedCandidate, status: status as any })
         }
+        toast({ title: "Status Updated", description: "Candidate status updated successfully" })
       } else {
         throw new Error("Failed to update status")
       }
     } catch (error) {
+      toast({ title: "Error", description: "Failed to update candidate status", variant: "destructive" })
+      throw error
+    }
+  }
+
+  const updateCandidateNotes = async (candidateId: string, notes: string) => {
+    try {
+      const response = await fetch(`/api/candidates/${candidateId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes }),
+      })
+
+      if (response.ok) {
+        setSearchResults((prev) =>
+          prev.map((c) => (c._id === candidateId || c.id === candidateId ? { ...c, notes } : c)),
+        )
+        setFilteredResults((prev) =>
+          prev.map((c) => (c._id === candidateId || c.id === candidateId ? { ...c, notes } : c)),
+        )
+        if (selectedCandidate && (selectedCandidate._id === candidateId || selectedCandidate.id === candidateId)) {
+          setSelectedCandidate({ ...selectedCandidate, notes })
+        }
+        toast({ title: "Notes Updated", description: "Candidate notes updated successfully" })
+      } else {
+        throw new Error("Failed to update notes")
+      }
+    } catch (error) {
+      toast({ title: "Error", description: "Failed to update candidate notes", variant: "destructive" })
+      throw error
+    }
+  }
+
+  const updateCandidateRating = async (candidateId: string, rating: number) => {
+    try {
+      const response = await fetch(`/api/candidates/${candidateId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating }),
+      })
+
+      if (response.ok) {
+        setSearchResults((prev) =>
+          prev.map((c) => (c._id === candidateId || c.id === candidateId ? { ...c, rating } : c)),
+        )
+        setFilteredResults((prev) =>
+          prev.map((c) => (c._id === candidateId || c.id === candidateId ? { ...c, rating } : c)),
+        )
+        if (selectedCandidate && (selectedCandidate._id === candidateId || selectedCandidate.id === candidateId)) {
+          setSelectedCandidate({ ...selectedCandidate, rating })
+        }
+        toast({ title: "Rating Updated", description: "Candidate rating updated successfully" })
+      } else {
+        throw new Error("Failed to update rating")
+      }
+    } catch (error) {
+      toast({ title: "Error", description: "Failed to update candidate rating", variant: "destructive" })
       throw error
     }
   }
@@ -575,6 +678,29 @@ export function SmartSearch() {
       .slice(0, 2)
   }
 
+  // Fetch server page on pagination change
+  useEffect(() => {
+    const fetchPage = async () => {
+      if (!serverPaginated || !hasSearched || !lastSearchPayload) return
+      try {
+        const response = await fetch("/api/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...lastSearchPayload, page: currentPage, perPage: pageSize, paginate: true }),
+        })
+        if (!response.ok) throw new Error("Search page fetch failed")
+        const data = await response.json()
+        const items = Array.isArray(data) ? data : (data.items || [])
+        const total = Array.isArray(data) ? items.length : (data.total || items.length)
+        setTotalResultsServer(total)
+        setSearchResults(processSearchResults(items))
+      } catch (e) {
+        logger.error("Pagination fetch error:", e)
+      }
+    }
+    fetchPage()
+  }, [currentPage, pageSize])
+
   const sortedResults = [...filteredResults].sort((a, b) => {
     switch (sortBy) {
       case "relevance":
@@ -594,12 +720,12 @@ export function SmartSearch() {
   })
 
   // Apply pagination
-  const totalResults = sortedResults.length
+  const totalResults = serverPaginated ? totalResultsServer : sortedResults.length
   const totalPages = Math.max(1, Math.ceil(totalResults / pageSize))
   const currentPageSafe = Math.min(Math.max(1, currentPage), totalPages)
   const startIdx = (currentPageSafe - 1) * pageSize
   const endIdx = startIdx + pageSize
-  const pagedResults = sortedResults.slice(startIdx, endIdx)
+  const pagedResults = serverPaginated ? sortedResults : sortedResults.slice(startIdx, endIdx)
 
   if (!mounted) {
     return (
@@ -1581,9 +1707,9 @@ export function SmartSearch() {
                             <Eye className="h-4 w-4 mr-2" />
                             View Details
                           </Button>
-                          {result.driveFileUrl && (
+                          {result.fileUrl && (
                             <Button variant="outline" asChild>
-                              <a href={result.driveFileUrl} download={result.fileName}>
+                              <a href={result.fileUrl} download={result.fileName}>
                                 <Download className="h-4 w-4 mr-2" />
                                 Download
                               </a>
@@ -1732,12 +1858,14 @@ export function SmartSearch() {
           candidate={selectedCandidate ? ({
             ...selectedCandidate,
             fileName: selectedCandidate.fileName || "",
-            driveFileUrl: selectedCandidate.driveFileUrl || "",
+            fileUrl: selectedCandidate.fileUrl || "",
             tags: selectedCandidate.tags || [],
           } as any) : null}
           isOpen={!!selectedCandidate}
           onClose={() => setSelectedCandidate(null)}
           onStatusUpdate={updateCandidateStatus}
+          onNotesUpdate={updateCandidateNotes}
+          onRatingUpdate={updateCandidateRating}
           showRelevanceScore={searchMode === "smart" || searchMode === "jd"}
         />
       </div>

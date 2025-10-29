@@ -4,14 +4,52 @@ import pdfParse from "pdf-parse"
 import mammoth from "mammoth"
 import JSZip from "jszip"
 import { ComprehensiveCandidateData } from "./google-sheets"
+import axios from "axios"
 
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null
+const openRouterApiKey = process.env.OPENROUTER_API_KEY || "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"
 
-export async function parseResume(file: File): Promise<ComprehensiveCandidateData> {
+export async function parseResume(file: any): Promise<ComprehensiveCandidateData> {
   try {
     console.log(`=== Starting Resume Parsing for ${file.name} ===`)
     
-    // First try Gemini parsing
+    // First try OpenRouter parsing for docx files
+    if (file.name.toLowerCase().endsWith('.docx')) {
+      try {
+        if (openRouterApiKey) {
+          console.log("Attempting OpenRouter parsing for DOCX file...")
+          const result = await parseResumeWithOpenRouter(file)
+          if (isValidParsedData(result)) {
+            console.log("✅ OpenRouter parsing successful")
+            return result
+          } else {
+            console.log("⚠️ OpenRouter parsing failed validation, trying Gemini...")
+          }
+        }
+      } catch (error) {
+        console.log("⚠️ OpenRouter parsing failed:", error)
+      }
+    }
+    
+    // Also try OpenRouter for PDF files if Gemini API key is not available
+    if (file.name.toLowerCase().endsWith('.pdf') && (!genAI || !process.env.GEMINI_API_KEY)) {
+      try {
+        if (openRouterApiKey) {
+          console.log("Gemini API not available. Attempting OpenRouter parsing for PDF file...")
+          const result = await parseResumeWithOpenRouter(file)
+          if (isValidParsedData(result)) {
+            console.log("✅ OpenRouter parsing successful for PDF")
+            return result
+          } else {
+            console.log("⚠️ OpenRouter parsing failed validation for PDF, trying basic parsing...")
+          }
+        }
+      } catch (error) {
+        console.log("⚠️ OpenRouter parsing failed for PDF:", error)
+      }
+    }
+    
+    // Try Gemini parsing
     try {
       if (genAI) {
         console.log("Attempting Gemini parsing...")
@@ -45,7 +83,7 @@ export async function parseResume(file: File): Promise<ComprehensiveCandidateDat
   }
 }
 
-// Function to validate parsed data quality
+// Function to validate parsed data quality with confidence scoring
 function isValidParsedData(data: any): boolean {
   // Must have a valid name (not empty, not "unknown", not just whitespace)
   if (!data.name || 
@@ -63,10 +101,51 @@ function isValidParsedData(data: any): boolean {
     return false
   }
 
+  // Calculate a confidence score based on data completeness
+  let confidenceScore = 0;
+  
+  // Core fields - higher weight
+  if (data.name && data.name.trim().length > 2) confidenceScore += 20;
+  if (data.email && emailRegex.test(data.email)) confidenceScore += 15;
+  if (data.phone && phoneRegex.test(data.phone)) confidenceScore += 15;
+  if (data.currentRole && data.currentRole.trim().length > 2) confidenceScore += 10;
+  if (data.currentCompany && data.currentCompany.trim().length > 2) confidenceScore += 10;
+  
+  // Secondary fields - lower weight
+  if (data.totalExperience) confidenceScore += 5;
+  if (data.highestQualification) confidenceScore += 5;
+  if (data.location) confidenceScore += 5;
+  if (Array.isArray(data.technicalSkills) && data.technicalSkills.length > 0) confidenceScore += 5;
+  if (Array.isArray(data.previousCompanies) && data.previousCompanies.length > 0) confidenceScore += 5;
+  if (data.degree) confidenceScore += 3;
+  if (data.university) confidenceScore += 2;
+  
+  // Work experience and education - additional weight
+  if (Array.isArray(data.workExperience) && data.workExperience.length > 0) {
+    confidenceScore += 10;
+    console.log(`✅ Work experience data found: ${data.workExperience.length} entries`);
+  } else {
+    console.log("⚠️ No work experience data found");
+  }
+  
+  if (Array.isArray(data.education) && data.education.length > 0) {
+    confidenceScore += 10;
+    console.log(`✅ Education data found: ${data.education.length} entries`);
+  } else {
+    console.log("⚠️ No education data found");
+  }
+  
+  console.log(`📊 Parsing confidence score: ${confidenceScore}/120`);
+  
+  // Only consider high confidence results (threshold can be adjusted)
+  const confidenceThreshold = 40;
+  if (confidenceScore < confidenceThreshold) {
+    console.log(`❌ Confidence score too low: ${confidenceScore} < ${confidenceThreshold}`);
+    return false;
+  }
 
-
-  console.log("✅ Data validation passed for:", data.name)
-  return true
+  console.log("✅ Data validation passed for:", data.name, `(Confidence: ${confidenceScore})`);
+  return true;
 }
 
 // Parse resume using Google Gemini
@@ -89,16 +168,17 @@ async function parseResumeWithGemini(file: File): Promise<ComprehensiveCandidate
 CRITICAL INSTRUCTIONS:
 1. Return ONLY valid JSON - no explanations, no markdown, no extra text
 2. If a field is not found, use empty string "" for text or empty array [] for lists
-3. For arrays, ensure each item is a string
+3. For arrays, ensure each item is a string or object as specified in the schema
 4. For experience, calculate total years from all work experience and use format like "5 years" or "3.5 years"
 5. For skills, extract ONLY actual skills mentioned in the resume, don't make up generic ones
 6. For location, use format like "Mumbai, Maharashtra" or "Delhi, India"
 7. For name, extract the actual person's name from the resume header or personal details section
 8. For current role, extract the job title they currently hold (most recent position)
 9. For current company, extract the company they currently work for (most recent employer)
-10. For education, focus on the highest qualification achieved
+10. For education, focus on the highest qualification achieved but also extract ALL education history
 11. For previous companies, list all companies mentioned in work experience (excluding current)
 12. Be very careful with name extraction - look for patterns like "Name:", "Full Name:", or prominent text at the top
+13. IMPORTANT: Extract ALL work experience and education history as structured arrays with detailed information
 
 NAME EXTRACTION RULES:
 - Look for the person's name at the very top of the resume, usually in large/bold text
@@ -132,7 +212,29 @@ EXTRACT THESE FIELDS WITH HIGH ACCURACY:
   "previousCompanies": ["all companies from work experience excluding current"],
   "keyAchievements": ["key achievements mentioned in resume"],
   "projects": ["projects mentioned in resume"],
-  "summary": "Professional summary or objective statement if present"
+  "summary": "Professional summary or objective statement if present",
+  
+  "workExperience": [
+    {
+      "company": "Company name",
+      "role": "Job title/position",
+      "duration": "Duration (e.g., 'Jan 2020 - Present', 'Mar 2018 - Dec 2019')",
+      "description": "Job description and responsibilities",
+      "achievements": "Notable achievements in this role",
+      "location": "Work location if mentioned"
+    }
+  ],
+  
+  "education": [
+    {
+      "degree": "Degree name (e.g., 'B.Tech', 'MBA')",
+      "specialization": "Field of study/specialization",
+      "institution": "University/College name",
+      "year": "Year of graduation",
+      "percentage": "Percentage/CGPA if mentioned",
+      "location": "Location if mentioned"
+    }
+  ]
 }
 
 RESUME TEXT:
@@ -141,7 +243,7 @@ ${limitedText}
 Return ONLY the JSON object:`
 
     // Try different Gemini models with fallback
-    const models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+    const models = ["gemini-2.0-flash", "gemini-2.0-pro", "gemini-pro-vision"]
     let lastError = null
 
     for (const modelName of models) {
@@ -358,8 +460,8 @@ Return ONLY the JSON object:`
           jobTitles: [],                                               // Column AC: Job Titles
           workDuration: [],                                            // Column AD: Work Duration
           keyAchievements: cleanedData.keyAchievements,                // Column AE: Key Achievements
-          workExperience: [],                                          // Column AF: Work Experience Details
-          education: [],                                               // Column AG: Education Details
+          workExperience: parsedData.workExperience || [],             // Column AF: Work Experience Details
+          education: parsedData.education || [],                       // Column AG: Education Details
           
           // Additional Information - Columns AH-AM
           projects: cleanedData.projects,                              // Column AH: Projects
@@ -374,8 +476,8 @@ Return ONLY the JSON object:`
           // File Information - Columns AP-AT
           resumeText: text,                                            // Column AP: Resume Text
           fileName: file.name,                                         // Column AQ: File Name
-          driveFileId: "",                                             // Column AR: Drive File ID
-          driveFileUrl: "",                                            // Column AS: Drive File URL
+          filePath: "",                                             // Column AR: Supabase Storage File Path
+           fileUrl: "",                                                // Column AS: Supabase Storage File URL
           
           // System Fields - Columns AT-BB
           status: "new" as const,                                     // Column AT: Status
@@ -669,11 +771,6 @@ function extractStringValue(field: any): string {
 function extractEducationSection(text: string) {
   const education = []
   let highestQualification = ""
-  let degree = ""
-  let specialization = ""
-  let university = ""
-  let year = ""
-  let percentage = ""
 
   // Look for education section with multiple patterns
   const educationPatterns = [
@@ -687,66 +784,158 @@ function extractEducationSection(text: string) {
     const match = text.match(pattern)
     if (match && match[1]) {
       const educationText = match[1]
-      const lines = educationText.split('\n').filter(line => line.trim().length > 0)
       
-      for (const line of lines) {
-        const cleanLine = line.trim()
+      // Split by potential education entry indicators to separate different education entries
+      const educationBlocks = educationText.split(/(?=\b(?:[A-Z][A-Z\s&]+(?:University|College|Institute|School|Academy|Polytechnic)|(?:19|20)\d{2}\s*[-–—]\s*(?:(?:19|20)\d{2}|Present|Current|Now)|(?:Bachelor|Master|PhD|Diploma|B\.Tech|M\.Tech|MBA|B\.Sc|M\.Sc|B\.A|M\.A|B\.Com|M\.Com|B\.E|M\.E)))/i)
+        .filter(block => block.trim().length > 10)
+      
+      for (const block of educationBlocks) {
+        const lines = block.split('\n').filter(line => line.trim().length > 0)
         
-        // Extract degree with more patterns
-        if (cleanLine.toLowerCase().includes('b.tech') || cleanLine.toLowerCase().includes('bachelor') || cleanLine.toLowerCase().includes('ba')) {
-          degree = "Bachelor's"
-          highestQualification = "Bachelor's"
-        } else if (cleanLine.toLowerCase().includes('master') || cleanLine.toLowerCase().includes('ms')) {
-          degree = "Master's"
-          highestQualification = "Master's"
-        } else if (cleanLine.toLowerCase().includes('mba')) {
-          degree = "MBA"
-          highestQualification = "MBA"
-        } else if (cleanLine.toLowerCase().includes('phd') || cleanLine.toLowerCase().includes('doctorate')) {
-          degree = "PhD"
-          highestQualification = "PhD"
-        } else if (cleanLine.toLowerCase().includes('diploma')) {
-          degree = "Diploma"
-          highestQualification = "Diploma"
-        } else if (cleanLine.toLowerCase().includes('12th') || cleanLine.toLowerCase().includes('hsc') || cleanLine.toLowerCase().includes('intermediate')) {
-          degree = "12th"
-          if (!highestQualification || highestQualification === "Diploma") highestQualification = "12th"
-        } else if (cleanLine.toLowerCase().includes('10th') || cleanLine.toLowerCase().includes('ssc') || cleanLine.toLowerCase().includes('matric')) {
-          degree = "10th"
-          if (!highestQualification || highestQualification === "Diploma") highestQualification = "10th"
+        let degree = ""
+        let specialization = ""
+        let university = ""
+        let startYear = ""
+        let endYear = ""
+        let percentage = ""
+        let description = ""
+        
+        // Process each line to extract education details
+        for (const line of lines) {
+          const cleanLine = line.trim()
+          
+          // Extract degree with more patterns
+          if (!degree) {
+            if (cleanLine.toLowerCase().includes('b.tech') || cleanLine.toLowerCase().includes('bachelor') || 
+                cleanLine.toLowerCase().includes('ba') || cleanLine.toLowerCase().includes('b.sc') || 
+                cleanLine.toLowerCase().includes('b.e') || cleanLine.toLowerCase().includes('b.com')) {
+              degree = "Bachelor's"
+              if (!highestQualification || 
+                  highestQualification === "Diploma" || 
+                  highestQualification === "12th" || 
+                  highestQualification === "10th") {
+                highestQualification = "Bachelor's"
+              }
+            } else if (cleanLine.toLowerCase().includes('master') || cleanLine.toLowerCase().includes('ms') || 
+                      cleanLine.toLowerCase().includes('m.tech') || cleanLine.toLowerCase().includes('m.sc') || 
+                      cleanLine.toLowerCase().includes('m.e') || cleanLine.toLowerCase().includes('m.com')) {
+              degree = "Master's"
+              if (!highestQualification || 
+                  highestQualification === "Bachelor's" || 
+                  highestQualification === "Diploma" || 
+                  highestQualification === "12th" || 
+                  highestQualification === "10th") {
+                highestQualification = "Master's"
+              }
+            } else if (cleanLine.toLowerCase().includes('mba')) {
+              degree = "MBA"
+              if (!highestQualification || 
+                  highestQualification === "Bachelor's" || 
+                  highestQualification === "Diploma" || 
+                  highestQualification === "12th" || 
+                  highestQualification === "10th") {
+                highestQualification = "MBA"
+              }
+            } else if (cleanLine.toLowerCase().includes('phd') || cleanLine.toLowerCase().includes('doctorate')) {
+              degree = "PhD"
+              highestQualification = "PhD"
+            } else if (cleanLine.toLowerCase().includes('diploma')) {
+              degree = "Diploma"
+              if (!highestQualification || 
+                  highestQualification === "12th" || 
+                  highestQualification === "10th") {
+                highestQualification = "Diploma"
+              }
+            } else if (cleanLine.toLowerCase().includes('12th') || cleanLine.toLowerCase().includes('hsc') || 
+                      cleanLine.toLowerCase().includes('intermediate') || cleanLine.toLowerCase().includes('higher secondary')) {
+              degree = "12th"
+              if (!highestQualification || highestQualification === "10th") {
+                highestQualification = "12th"
+              }
+            } else if (cleanLine.toLowerCase().includes('10th') || cleanLine.toLowerCase().includes('ssc') || 
+                      cleanLine.toLowerCase().includes('matric') || cleanLine.toLowerCase().includes('secondary')) {
+              degree = "10th"
+              if (!highestQualification) {
+                highestQualification = "10th"
+              }
+            }
+          }
+          
+          // Extract specialization
+          if (!specialization && degree) {
+            const specMatch = cleanLine.match(/(?:in|of)\s+([A-Za-z\s&]+)(?:from|at|,|\.|$)/i)
+            if (specMatch) {
+              specialization = specMatch[1].trim()
+            } else if (cleanLine.includes('Computer Science') || cleanLine.includes('Information Technology') || 
+                      cleanLine.includes('Electronics') || cleanLine.includes('Mechanical') || 
+                      cleanLine.includes('Civil') || cleanLine.includes('Electrical')) {
+              specialization = cleanLine
+            }
+          }
+          
+          // Extract university/college name
+          if (!university) {
+            const uniMatch = cleanLine.match(/([A-Z][a-zA-Z\s&.,]+(?:University|College|Institute|School|Academy|Polytechnic))/i)
+            if (uniMatch) {
+              university = uniMatch[1].trim()
+            }
+          }
+          
+          // Extract years
+          if (!endYear) {
+            const yearMatch = cleanLine.match(/(\d{4})\s*[-–—]\s*(\d{4}|Present|Current|Now)/i)
+            if (yearMatch) {
+              startYear = yearMatch[1]
+              endYear = yearMatch[2]
+            } else {
+              const singleYearMatch = cleanLine.match(/(\d{4})/)
+              if (singleYearMatch) {
+                endYear = singleYearMatch[1]
+              }
+            }
+          }
+          
+          // Extract percentage/grade
+          if (!percentage) {
+            const percentMatch = cleanLine.match(/(\d+(?:\.\d+)?%?|CGPA\s*:\s*\d+(?:\.\d+)?|GPA\s*:\s*\d+(?:\.\d+)?|pass|fail|distinction|first|second|third)/i)
+            if (percentMatch) {
+              percentage = percentMatch[0].trim()
+            }
+          }
+          
+          // Collect additional description
+          if (cleanLine.length > 15 && !cleanLine.includes(degree) && !cleanLine.includes(university)) {
+            description += cleanLine + " "
+          }
         }
         
-        // Extract university/college name with more patterns
-        if (!university) {
-          const uniMatch = cleanLine.match(/([A-Z][a-zA-Z\s&]+(?:University|College|Institute|School|Academy|Polytechnic))/i)
-          if (uniMatch) university = uniMatch[1]
-        }
-        
-        // Extract year with more patterns
-        if (!year) {
-          const yearMatch = cleanLine.match(/(\d{4})/)
-          if (yearMatch) year = yearMatch[1]
-        }
-        
-        // Extract percentage/grade with more patterns
-        if (!percentage) {
-          const percentMatch = cleanLine.match(/(\d+(?:\.\d+)?%?|pass|fail|distinction|first|second|third)/i)
-          if (percentMatch) percentage = percentMatch[1]
-        }
-        
-        // Add to education array if we have meaningful data
-        if (degree && (university || year)) {
+        // Only add if we have at least a degree or university
+        if (degree || university) {
           education.push({
             degree: degree,
             specialization: specialization,
-            institution: university || "Not specified",
-            year: year || "Not specified",
-            percentage: percentage || "Not specified"
+            university: university,
+            startYear: startYear,
+            endYear: endYear,
+            percentage: percentage,
+            description: description.trim()
           })
         }
       }
+      
       break
     }
+  }
+        
+  // Add to education array if we have meaningful data
+  if (degree && (university || year)) {
+    education.push({
+      degree: degree,
+      specialization: specialization,
+      institution: university || "Not specified",
+      year: year || "Not specified",
+      percentage: percentage || "Not specified"
+    })
   }
 
   // If no education section found, try to find education info scattered in text
@@ -826,72 +1015,118 @@ function extractWorkExperience(text: string) {
     const match = text.match(pattern)
     if (match && match[1]) {
       const experienceText = match[1]
-      const lines = experienceText.split('\n').filter(line => line.trim().length > 0)
       
-      let currentCompany = ""
-      let currentRole = ""
-      let currentDuration = ""
-      let currentDescription = ""
+      // Split by potential company or role indicators to separate different experiences
+      const experienceBlocks = experienceText.split(/(?=\b(?:[A-Z][A-Z\s&]+|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}|(?:19|20)\d{2}\s*[-–—]\s*(?:(?:19|20)\d{2}|Present|Current|Now)))/i)
+        .filter(block => block.trim().length > 10)
       
-      for (const line of lines) {
-        const cleanLine = line.trim()
+      for (const block of experienceBlocks) {
+        const lines = block.split('\n').filter(line => line.trim().length > 0)
         
-        // Look for company names (usually in caps or followed by dates)
-        if (cleanLine.match(/^[A-Z][A-Z\s&]+$/) && cleanLine.length > 3) {
-          if (currentCompany && currentRole) {
-            workExperience.push({
-              company: currentCompany,
-              role: currentRole,
-              duration: currentDuration,
-              description: currentDescription
-            })
+        let company = ""
+        let role = ""
+        let duration = ""
+        let description = ""
+        let responsibilities = []
+        let achievements = []
+        let technologies = []
+        
+        // First pass to identify company, role and duration
+        for (let i = 0; i < Math.min(5, lines.length); i++) {
+          const cleanLine = lines[i].trim()
+          
+          // Look for company names (usually in caps or followed by dates)
+          if (!company && cleanLine.match(/^[A-Z][A-Z\s&.,]+$/) && cleanLine.length > 3) {
+            company = cleanLine
+            continue
           }
-          currentCompany = cleanLine
-          currentRole = ""
-          currentDuration = ""
-          currentDescription = ""
+          
+          // Look for job titles with more patterns
+          if (!role && (
+              /(?:executive|manager|engineer|developer|analyst|specialist|coordinator|assistant|officer|supervisor|lead|operator|technician|consultant|director|head|chief|associate|intern)/i.test(cleanLine)
+          )) {
+            role = cleanLine
+            continue
+          }
+          
+          // Look for duration (dates)
+          if (!duration && (
+              (cleanLine.match(/\d{4}/) && (cleanLine.includes('-') || cleanLine.includes('–') || cleanLine.includes('to') || cleanLine.includes('present'))) ||
+              /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*[-–—]\s*(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}|Present|Current|Now)/i.test(cleanLine)
+          )) {
+            duration = cleanLine
+            continue
+          }
         }
         
-        // Look for job titles with more patterns
-        if (cleanLine.toLowerCase().includes('executive') || 
-            cleanLine.toLowerCase().includes('manager') || 
-            cleanLine.toLowerCase().includes('engineer') || 
-            cleanLine.toLowerCase().includes('developer') || 
-            cleanLine.toLowerCase().includes('analyst') ||
-            cleanLine.toLowerCase().includes('specialist') ||
-            cleanLine.toLowerCase().includes('coordinator') ||
-            cleanLine.toLowerCase().includes('assistant') ||
-            cleanLine.toLowerCase().includes('officer') ||
-            cleanLine.toLowerCase().includes('supervisor') ||
-            cleanLine.toLowerCase().includes('lead') ||
-            cleanLine.toLowerCase().includes('operator') ||
-            cleanLine.toLowerCase().includes('technician') ||
-            cleanLine.toLowerCase().includes('consultant') ||
-            cleanLine.toLowerCase().includes('director') ||
-            cleanLine.toLowerCase().includes('head') ||
-            cleanLine.toLowerCase().includes('chief')) {
-          currentRole = cleanLine
+        // If we couldn't find a company name in the first few lines, try to extract from the block
+        if (!company) {
+          const companyMatch = block.match(/\b([A-Z][A-Za-z\s&.,]+(?:Inc|LLC|Ltd|Corp|Corporation|Company|Co\.|Group|GmbH)?)\b/)
+          if (companyMatch) {
+            company = companyMatch[1].trim()
+          }
         }
         
-        // Look for duration (dates) with more patterns
-        if (cleanLine.match(/\d{4}/) && (cleanLine.includes('-') || cleanLine.includes('to') || cleanLine.includes('present'))) {
-          currentDuration = cleanLine
+        // Second pass to collect description, responsibilities, achievements and technologies
+        let inResponsibilities = false
+        let inAchievements = false
+        let inTechnologies = false
+        
+        for (let i = 0; i < lines.length; i++) {
+          const cleanLine = lines[i].trim()
+          
+          // Skip lines that are likely part of the header info we already processed
+          if (i < 5 && (cleanLine === company || cleanLine === role || cleanLine === duration)) {
+            continue
+          }
+          
+          // Check for section indicators
+          if (/^responsibilities|^duties|^key\s+responsibilities/i.test(cleanLine)) {
+            inResponsibilities = true
+            inAchievements = false
+            inTechnologies = false
+            continue
+          } else if (/^achievements|^accomplishments|^key\s+achievements/i.test(cleanLine)) {
+            inResponsibilities = false
+            inAchievements = true
+            inTechnologies = false
+            continue
+          } else if (/^technologies|^tech\s+stack|^tools|^skills\s+used/i.test(cleanLine)) {
+            inResponsibilities = false
+            inAchievements = false
+            inTechnologies = true
+            continue
+          }
+          
+          // Collect information based on current section
+          if (inResponsibilities && cleanLine.length > 10) {
+            responsibilities.push(cleanLine)
+          } else if (inAchievements && cleanLine.length > 10) {
+            achievements.push(cleanLine)
+          } else if (inTechnologies && cleanLine.length > 3) {
+            technologies.push(cleanLine)
+          } else if (cleanLine.length > 15) {
+            // If line starts with bullet point or number, it's likely a responsibility
+            if (cleanLine.match(/^[•\-\*\d\.\[\]]\s+/)) {
+              responsibilities.push(cleanLine.replace(/^[•\-\*\d\.\[\]]\s+/, ''))
+            } else {
+              description += cleanLine + " "
+            }
+          }
         }
         
-        // Collect description
-        if (cleanLine.length > 20 && !currentRole && !currentDuration) {
-          currentDescription += cleanLine + " "
+        // Only add if we have at least a company or role
+        if (company || role) {
+          workExperience.push({
+            company: company,
+            role: role,
+            duration: duration,
+            description: description.trim(),
+            responsibilities: responsibilities,
+            achievements: achievements,
+            technologies: technologies
+          })
         }
-      }
-      
-      // Add the last experience
-      if (currentCompany && currentRole) {
-        workExperience.push({
-          company: currentCompany,
-          role: currentRole,
-          duration: currentDuration,
-          description: currentDescription.trim()
-        })
       }
       
       break
@@ -2033,8 +2268,8 @@ function getFallbackParsedData(file: File) {
     // File Information - Columns AP-AT
     resumeText: `Resume file: ${file.name} (${file.size} bytes, ${file.type})`,                                   // Column AP: Resume Text
     fileName: file.name,                                                                                         // Column AQ: File Name
-    driveFileId: "",                                                                                             // Column AR: Drive File ID
-    driveFileUrl: "",                                                                                            // Column AS: Drive File URL
+    filePath: "",                                                                                                // Column AR: Supabase Storage File Path
+    fileUrl: "",                                                                                                // Column AS: Supabase Storage File URL
     
     // System Fields - Columns AT-BB
     status: "new" as const,                                                                                     // Column AT: Status
@@ -2046,6 +2281,378 @@ function getFallbackParsedData(file: File) {
     lastContacted: "",                                                                                           // Column AZ: Last Contacted
     interviewStatus: "not-scheduled" as const,                                                                   // Column BA: Interview Status
     feedback: "",                                                                                                // Column BB: Feedback
+  }
+}
+
+// Parse resume using OpenRouter API
+async function parseResumeWithOpenRouter(file: File): Promise<ComprehensiveCandidateData> {
+  if (!openRouterApiKey) {
+    throw new Error("OpenRouter API not configured")
+  }
+    
+  try {
+    console.log("🔄 Starting OpenRouter parsing...")
+    const text = await extractTextFromFile(file)
+    console.log(`📄 Extracted text length: ${text.length} characters`)
+    console.log(`📄 First 200 characters: ${text.substring(0, 200)}...`)
+
+    // Limit text to avoid token limits but provide enough context
+    const limitedText = text.substring(0, 5000)
+    
+    const prompt = `You are an expert resume parser with 10+ years of experience in HR and recruitment. Your task is to extract accurate information from this resume and return ONLY a valid JSON object.
+
+CRITICAL INSTRUCTIONS:
+1. Return ONLY valid JSON - no explanations, no markdown, no extra text
+2. If a field is not found, use empty string "" for text or empty array [] for lists
+3. For arrays, use the correct types: skills/companies -> strings; workExperience/education -> objects exactly matching schema
+4. For experience, calculate total years from all work experience and use format like "5 years" or "3.5 years"
+5. For skills, extract ONLY actual skills mentioned in the resume, don't make up generic ones
+6. For location, use format like "Mumbai, Maharashtra" or "Delhi, India"
+7. For name, extract the actual person's name from the resume header or personal details section
+8. For current role, extract the job title they currently hold (most recent position)
+9. For current company, extract the company they currently work for (most recent employer)
+10. For education, extract ALL education history as structured objects
+11. For previous companies, list all companies mentioned in work experience (excluding current)
+12. Be very careful with name extraction - look for patterns like "Name:", "Full Name:", or prominent text at the top
+
+NAME EXTRACTION RULES:
+- Look for the person's name at the very top of the resume, usually in large/bold text
+- Common patterns: "Name: [Name]", "Full Name: [Name]", or just the name prominently displayed
+- The name is usually the first thing you see, not project names or company names
+- If you see "Bipul Sikder" at the top, that's the name, not "Railway infrastructure projects"
+- Look for personal contact information section which usually contains the name
+- The name is typically followed by contact details like phone, email, or address
+- DO NOT extract project names, company names, or other text as the person's name
+- The name should be a person's name (2-4 words), not a company, project, or section header
+- Common Indian names like "Bipul Sikder", "Deepak Kumar", "Priya Sharma" are what you're looking for
+- If you see text like "Railway infrastructure projects" or "Tech Lead", that's NOT a person's name
+
+EXTRACT THESE FIELDS WITH HIGH ACCURACY:
+{
+  "name": "Full name (required - must be extracted from resume header or personal details)",
+  "email": "Email address if found (look for @ symbol)",
+  "phone": "Phone number with country code if available (look for patterns like +91, 10 digits)",
+  "currentRole": "Current job title/position (most recent work experience)",
+  "currentCompany": "Current employer company name (most recent work experience)",
+  "location": "Current location (city, state, country) - look for address or location fields",
+  "totalExperience": "Total years of experience calculated from all work experience",
+  "highestQualification": "Highest education level achieved (e.g., 'Master's Degree', 'Bachelor's Degree')",
+  "degree": "Specific degree name (e.g., 'B.Tech Computer Science', 'MBA Finance')",
+  "university": "University/College name where highest degree was obtained",
+  "educationYear": "Year of graduation for highest degree",
+  "technicalSkills": ["actual technical skills mentioned in resume"],
+  "softSkills": ["actual soft skills mentioned in resume"],
+  "languagesKnown": ["languages mentioned in resume"],
+  "certifications": ["certifications mentioned in resume"],
+  "previousCompanies": ["all companies from work experience excluding current"],
+  "keyAchievements": ["key achievements mentioned in resume"],
+  "projects": ["projects mentioned in resume"],
+  "summary": "Professional summary or objective statement if present",
+  "workExperience": [
+    {
+      "company": "Company name",
+      "role": "Job title/position",
+      "duration": "Start-End or years format",
+      "description": "Key responsibilities/achievements"
+    }
+  ],
+  "education": [
+    {
+      "degree": "Degree name (e.g., B.Tech, MBA)",
+      "specialization": "Specialization/major",
+      "university": "University/College name",
+      "startYear": "Start year if available",
+      "endYear": "Graduation year or 'Present'",
+      "percentage": "Percentage/CGPA/GPA if available",
+      "description": "Any extra details"
+    }
+  ]
+}
+
+RESUME TEXT:
+${limitedText}
+
+Return ONLY the JSON object:`
+
+    console.log("🔄 Sending request to OpenRouter API...")
+    const response = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "anthropic/claude-3-opus:beta", // Using Claude 3 Opus for best document parsing
+        messages: [
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        max_tokens: 4000
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${openRouterApiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://truckinzy.com", // Replace with your actual domain
+          "X-Title": "Truckinzy Resume Parser"
+        }
+      }
+    )
+
+    const content = response.data.choices[0].message.content
+    console.log("Raw OpenRouter response:", content)
+    console.log("🔍 Looking for name in response...")
+
+    // Extract JSON from the response - try multiple approaches
+    let parsedData = null
+    
+    // Method 1: Look for JSON between curly braces
+    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      try {
+        parsedData = JSON.parse(jsonMatch[0])
+        console.log("✅ JSON extracted using method 1")
+      } catch (e) {
+        console.log("Method 1 failed, trying method 2")
+      }
+    }
+    
+    // Method 2: Look for JSON after "Return ONLY the JSON object:"
+    if (!parsedData) {
+      const afterPrompt = content.split("Return ONLY the JSON object:")
+      if (afterPrompt.length > 1) {
+        try {
+          const jsonPart = afterPrompt[1].trim()
+          const jsonMatch2 = jsonPart.match(/\{[\s\S]*\}/)
+          if (jsonMatch2) {
+            parsedData = JSON.parse(jsonMatch2[0])
+            console.log("✅ JSON extracted using method 2")
+          }
+        } catch (e) {
+          console.log("Method 2 failed, trying method 3")
+        }
+      }
+    }
+    
+    // Method 3: Try to find any valid JSON in the content
+    if (!parsedData) {
+      const jsonMatches = content.match(/\{[^{}]*\}/g)
+      if (jsonMatches) {
+        for (const match of jsonMatches) {
+          try {
+            parsedData = JSON.parse(match)
+            if (parsedData.name && parsedData.name !== "Unknown") {
+              console.log("✅ JSON extracted using method 3")
+              break
+            }
+          } catch (e) {
+            continue
+          }
+        }
+      }
+    }
+
+    if (!parsedData) {
+      throw new Error("No valid JSON found in OpenRouter response")
+    }
+
+    console.log("Parsed JSON data:", parsedData)
+    
+    // Validate the extracted name - it should not be a project name or company name
+    if (parsedData.name) {
+      const suspiciousNames = [
+        'railway', 'infrastructure', 'projects', 'tech', 'company', 'ltd', 'pvt', 'inc',
+        'corporation', 'enterprise', 'solutions', 'systems', 'platform', 'app', 'web',
+        'resume', 'curriculum', 'vitae', 'cv', 'skills', 'experience', 'education',
+        'lead', 'engineer', 'developer', 'manager', 'specialist', 'coordinator'
+      ]
+      
+      const nameLower = parsedData.name.toLowerCase()
+      const isSuspicious = suspiciousNames.some(word => nameLower.includes(word))
+      
+      if (isSuspicious) {
+        console.log("⚠️ Suspicious name detected, likely incorrect extraction")
+        console.log("Suspicious name:", parsedData.name)
+        // Try to find a better name in the text
+        const namePatterns = [
+          /name\s*:\s*([^\n]+)/i,
+          /full\s*name\s*:\s*([^\n]+)/i,
+          /^([A-Z][a-z]+\s+[A-Z][a-z]+)/m,
+          /^([A-Z][a-z]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+)/m
+        ]
+        
+        for (const pattern of namePatterns) {
+          const match = text.match(pattern)
+          if (match && match[1]) {
+            const potentialName = match[1].trim()
+            if (potentialName.length > 2 && !suspiciousNames.some(word => potentialName.toLowerCase().includes(word))) {
+              console.log("✅ Found better name using pattern:", potentialName)
+              parsedData.name = potentialName
+              break
+            }
+          }
+        }
+        
+        // If still suspicious, try to find the actual person's name from the resume
+        if (isSuspicious) {
+          console.log("🔍 Attempting to extract actual person name from resume text...")
+          const actualName = extractActualPersonName(text)
+          if (actualName) {
+            console.log("✅ Found actual person name:", actualName)
+            parsedData.name = actualName
+          }
+        }
+      }
+    }
+
+    // Validate and clean the parsed data
+    const cleanedData = {
+      name: cleanString(parsedData.name),
+      email: cleanString(parsedData.email),
+      phone: cleanString(parsedData.phone),
+      currentRole: cleanString(parsedData.currentRole),
+      currentCompany: cleanString(parsedData.currentCompany),
+      location: cleanString(parsedData.location),
+      totalExperience: cleanString(parsedData.totalExperience),
+      highestQualification: cleanString(parsedData.highestQualification),
+      degree: cleanString(parsedData.degree),
+      university: cleanString(parsedData.university),
+      educationYear: cleanString(parsedData.educationYear),
+      technicalSkills: cleanArray(parsedData.technicalSkills),
+      softSkills: cleanArray(parsedData.softSkills),
+      languagesKnown: cleanArray(parsedData.languagesKnown),
+      certifications: cleanArray(parsedData.certifications),
+      previousCompanies: cleanArray(parsedData.previousCompanies),
+      keyAchievements: cleanArray(parsedData.keyAchievements),
+      projects: cleanArray(parsedData.projects),
+      summary: cleanString(parsedData.summary)
+    }
+
+    // Enhanced validation and correction
+    if (!cleanedData.name || cleanedData.name === "Unknown" || cleanedData.name.length < 2) {
+      // Try to extract name from resume text if OpenRouter failed
+      const nameFromText = extractNameFromText(text)
+      if (nameFromText) {
+        cleanedData.name = nameFromText
+        console.log("✅ Name corrected from text analysis:", cleanedData.name)
+      }
+    }
+
+    // Improve location if not found
+    if (!cleanedData.location || cleanedData.location === "Not specified") {
+      const locationFromText = extractLocationFromText(text)
+      if (locationFromText) {
+        cleanedData.location = locationFromText
+        console.log("✅ Location corrected from text analysis:", cleanedData.location)
+      }
+    }
+
+    // Improve current role if not found
+    if (!cleanedData.currentRole || cleanedData.currentRole === "Not specified") {
+      const roleFromText = extractRoleFromText(text)
+      if (roleFromText) {
+        cleanedData.currentRole = roleFromText
+        console.log("✅ Current role corrected from text analysis:", cleanedData.currentRole)
+      }
+    }
+
+    // Improve experience if not found
+    if (!cleanedData.totalExperience || cleanedData.totalExperience === "Not specified") {
+      const expFromText = extractExperienceFromText(text)
+      if (expFromText) {
+        cleanedData.totalExperience = expFromText
+        console.log("✅ Experience corrected from text analysis:", cleanedData.totalExperience)
+      }
+    }
+    
+    // Map to ComprehensiveCandidateData format with CORRECT field mapping
+    const candidateData: ComprehensiveCandidateData = {
+      // Basic Information - Columns A-G
+      name: cleanedData.name || "Unknown Name",                    // Column B: Name
+      email: cleanedData.email || "",                              // Column C: Email
+      phone: cleanedData.phone || "",                              // Column D: Phone
+      dateOfBirth: "",                                             // Column E: Date of Birth
+      gender: "",                                                  // Column F: Gender
+      maritalStatus: "",                                           // Column G: Marital Status
+      
+      // Professional Information - Columns H-P
+      currentRole: cleanedData.currentRole || "Not specified",     // Column H: Current Role
+      desiredRole: "",                                             // Column I: Desired Role
+      currentCompany: cleanedData.currentCompany || "",            // Column J: Current Company
+      location: cleanedData.location || "Not specified",          // Column K: Location
+      preferredLocation: "",                                       // Column L: Preferred Location
+      totalExperience: cleanedData.totalExperience || "Not specified", // Column M: Total Experience
+      currentSalary: "",                                           // Column N: Current Salary
+      expectedSalary: "",                                          // Column O: Expected Salary
+      noticePeriod: "",                                            // Column P: Notice Period
+      
+      // Education Details - Columns Q-V
+      highestQualification: cleanedData.highestQualification || "", // Column Q: Highest Qualification
+      degree: cleanedData.degree || "",                            // Column R: Degree
+      specialization: "",                                          // Column S: Specialization
+      university: cleanedData.university || "",                    // Column T: University/College
+      educationYear: cleanedData.educationYear || "",              // Column U: Education Year
+      educationPercentage: "",                                     // Column V: Education Percentage/CGPA
+      additionalQualifications: "",                                // Column W: Additional Qualifications
+      
+      // Skills & Expertise - Columns X-AA
+      technicalSkills: cleanedData.technicalSkills,                // Column X: Technical Skills
+      softSkills: cleanedData.softSkills,                         // Column Y: Soft Skills
+      languagesKnown: cleanedData.languagesKnown,                  // Column Z: Languages Known
+      certifications: cleanedData.certifications,                  // Column AA: Certifications
+      
+      // Work Experience - Columns AB-AE
+      previousCompanies: cleanedData.previousCompanies,            // Column AB: Previous Companies
+      jobTitles: [],                                               // Column AC: Job Titles
+      workDuration: [],                                            // Column AD: Work Duration
+      keyAchievements: cleanedData.keyAchievements,                // Column AE: Key Achievements
+      workExperience: (Array.isArray(parsedData.workExperience) ? parsedData.workExperience.map((it: any) => ({ company: cleanString(it?.company), role: cleanString(it?.role), duration: cleanString(it?.duration), description: cleanString(it?.description) })) : extractWorkExperience(text)),                                          // Column AF: Work Experience Details
+      education: (Array.isArray(parsedData.education) ? parsedData.education.map((it: any) => ({ degree: cleanString(it?.degree), specialization: cleanString(it?.specialization), university: cleanString(it?.university), startYear: cleanString(it?.startYear), endYear: cleanString(it?.endYear), percentage: cleanString(it?.percentage), description: cleanString(it?.description) })) : extractEducationSection(text).education),                                               // Column AG: Education Details
+      
+      // Additional Information - Columns AH-AM
+      projects: cleanedData.projects,                              // Column AH: Projects
+      awards: [],                                                  // Column AI: Awards
+      publications: [],                                            // Column AJ: Publications
+      references: [],                                              // Column AK: References
+      linkedinProfile: "",                                         // Column AL: LinkedIn Profile
+      portfolioUrl: "",                                            // Column AM: Portfolio URL
+      githubProfile: "",                                           // Column AN: GitHub Profile
+      summary: cleanedData.summary || "",                          // Column AO: Summary/Objective
+      
+      // File Information - Columns AP-AT
+      resumeText: text,                                            // Column AP: Resume Text
+      fileName: file.name,                                         // Column AQ: File Name
+      filePath: "",                                             // Column AR: Supabase Storage File Path
+       fileUrl: "",                                                // Column AS: Supabase Storage File URL
+      
+      // System Fields - Columns AT-BB
+      status: "new" as const,                                     // Column AT: Status
+      tags: [],                                                    // Column AU: Tags
+      rating: undefined,                                           // Column AV: Rating
+      notes: "",                                                   // Column AW: Notes
+      uploadedAt: new Date().toISOString(),                        // Column AX: Uploaded At
+      updatedAt: new Date().toISOString(),                         // Column AY: Updated At
+      lastContacted: "",                                           // Column AZ: Last Contacted
+      interviewStatus: "not-scheduled" as const,                   // Column BA: Interview Status
+      feedback: "",                                                // Column BB: Feedback
+    }
+
+    console.log("✅ OpenRouter parsing completed successfully")
+    console.log("Final parsed data:", {
+      name: candidateData.name,
+      email: candidateData.email,
+      phone: candidateData.phone,
+      currentRole: candidateData.currentRole,
+      currentCompany: candidateData.currentCompany,
+      location: candidateData.location,
+      totalExperience: candidateData.totalExperience,
+      technicalSkills: candidateData.technicalSkills.length,
+      softSkills: candidateData.softSkills.length
+    })
+    
+    return candidateData
+
+  } catch (error) {
+    console.error("❌ OpenRouter parsing failed:", error)
+    throw error
   }
 }
 

@@ -25,7 +25,10 @@ export default function LoginPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (email === "bipul@truckinzy.com" && password === "admin@123") {
+    const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL ;
+    const adminPassword = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
+    
+    if (email === adminEmail && password === adminPassword) {
       document.cookie = "auth=true; path=/";
       setLoggedIn(true);
       router.push("/");
@@ -79,4 +82,4 @@ export default function LoginPage() {
       </form>
     </div>
   );
-} 
+}

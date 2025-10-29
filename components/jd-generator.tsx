@@ -182,7 +182,7 @@ ${jobDescription.databaseInsights.map((insight, i) => `• ${insight}`).join("\n
           <h2 className="text-3xl font-bold text-gray-900">AI Job Description Generator</h2>
         </div>
         <p className="text-gray-600 max-w-2xl mx-auto">
-          Generate tailored job descriptions using AI and your Google Sheets database. Our system automatically analyzes
+          Generate tailored job descriptions using AI and your candidate database. Our system automatically analyzes
           similar roles to create accurate, industry-specific JDs.
         </p>
       </div>
@@ -211,7 +211,7 @@ ${jobDescription.databaseInsights.map((insight, i) => `• ${insight}`).join("\n
                   />
                   <div className="flex items-center space-x-2 mt-2 text-xs text-blue-600">
                     <Database className="h-3 w-3" />
-                    <span>AI will automatically search Google Sheets database for similar roles</span>
+                    <span>AI will automatically search candidate database for similar roles</span>
                   </div>
                 </div>
               </div>
@@ -285,9 +285,9 @@ ${jobDescription.databaseInsights.map((insight, i) => `• ${insight}`).join("\n
               <div className="flex items-start space-x-3">
                 <Search className="h-6 w-6 text-blue-600 mt-0.5" />
                 <div>
-                  <h4 className="font-semibold text-blue-900 mb-2">Google Sheets Database Analysis</h4>
+                  <h4 className="font-semibold text-blue-900 mb-2">Candidate Database Analysis</h4>
                   <p className="text-sm text-blue-800 mb-3">
-                    When you enter a job title, our AI will automatically search your Google Sheets database for similar
+                    When you enter a job title, our AI will automatically search your candidate database for similar
                     roles and extract relevant experience, skills, and responsibilities using Gemini AI.
                   </p>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
@@ -389,7 +389,7 @@ ${jobDescription.databaseInsights.map((insight, i) => `• ${insight}`).join("\n
                   <div className="bg-green-50 p-4 rounded-lg border border-green-200">
                     <p className="text-sm font-medium text-green-900 mb-2 flex items-center">
                       <Database className="h-4 w-4 mr-2" />
-                      Google Sheets Analysis Results ({jobDescription.matchedCandidates} similar profiles found)
+                      Database Analysis Results ({jobDescription.matchedCandidates} similar profiles found)
                     </p>
                     <div className="text-xs text-green-800 space-y-1">
                       {jobDescription.databaseInsights.map((insight, index) => (
@@ -489,14 +489,14 @@ ${jobDescription.databaseInsights.map((insight, i) => `• ${insight}`).join("\n
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">Smart JD Generation Ready</h3>
                 <p className="text-gray-600 mb-4">
                   Enter job details and click "Generate Smart Job Description" to create a tailored JD using AI and
-                  Google Sheets database insights.
+                  candidate database insights.
                 </p>
                 <div className="space-y-2 text-sm text-gray-500">
                   <p>
                     <strong>AI will automatically analyze:</strong>
                   </p>
                   <ul className="list-disc list-inside space-y-1">
-                    <li>Similar roles in your Google Sheets database</li>
+                    <li>Similar roles in your candidate database</li>
                     <li>Industry-specific responsibilities and requirements</li>
                     <li>Skills and experience patterns from existing candidates</li>
                     <li>Refined output using Gemini AI</li>
@@ -514,15 +514,15 @@ ${jobDescription.databaseInsights.map((insight, i) => `• ${insight}`).join("\n
           <div className="flex items-start space-x-3">
             <Sparkles className="h-6 w-6 text-purple-600 mt-0.5" />
             <div>
-              <h4 className="font-semibold text-purple-900 mb-2">Google Sheets + Gemini AI Integration</h4>
+              <h4 className="font-semibold text-purple-900 mb-2">Candidate Database + Gemini AI Integration</h4>
               <p className="text-sm text-purple-800 mb-3">
-                Our system directly analyzes your Google Sheets candidate database and uses Gemini AI to create highly
+                Our system directly analyzes your candidate database and uses Gemini AI to create highly
                 accurate, industry-specific job descriptions based on real candidate data.
               </p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                 <div className="flex items-center space-x-2">
                   <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                  <span className="text-purple-700">Direct Google Sheets access</span>
+                  <span className="text-purple-700">Direct database access</span>
                 </div>
                 <div className="flex items-center space-x-2">
                   <div className="w-2 h-2 bg-purple-500 rounded-full"></div>

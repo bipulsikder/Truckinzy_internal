@@ -1,5 +1,5 @@
 import { google } from "googleapis"
-import { checkFileExistsInBlob } from "./vercel-blob-utils"
+import { SupabaseCandidateService } from "./supabase-candidates"
 
 // Initialize Google APIs
 const auth = new google.auth.GoogleAuth({
@@ -15,6 +15,7 @@ const SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID
 
 export interface ComprehensiveCandidateData {
   id?: string
+  _id?: string
   // Basic Information
   name: string
   email: string
@@ -75,8 +76,8 @@ export interface ComprehensiveCandidateData {
   // File Information
   resumeText: string
   fileName: string
-  driveFileId: string
-  driveFileUrl: string
+  filePath: string
+  fileUrl: string
   // System Fields
   status: "new" | "reviewed" | "shortlisted" | "interviewed" | "selected" | "rejected" | "on-hold"
   tags: string[]
@@ -241,8 +242,8 @@ export async function addCandidate(candidateData: Omit<ComprehensiveCandidateDat
       // File Information
       candidateData.resumeText,
       candidateData.fileName,
-      candidateData.driveFileId,
-      candidateData.driveFileUrl,
+      candidateData.filePath,
+      candidateData.fileUrl,
       // System Fields
       candidateData.status,
       candidateData.tags.join(", "),
@@ -419,8 +420,8 @@ export async function getAllCandidates(): Promise<ComprehensiveCandidateData[]> 
         // File Information
         resumeText: row[41] || "",
         fileName: row[42] || "",
-        driveFileId: row[43] || "",
-        driveFileUrl: row[44] || "",
+        filePath: row[43] || "",
+        fileUrl: row[44] || "",
         // System Fields
         status: (row[45] as any) || "new",
         tags: row[46] ? row[46].split(", ").filter(Boolean) : [],
@@ -647,8 +648,8 @@ export async function updateCandidate(id: string, updates: Partial<Comprehensive
     row[40] = updatedCandidate.summary || "" // Summary/Objective
     row[41] = updatedCandidate.resumeText || "" // Resume Text
     row[42] = updatedCandidate.fileName || "" // File Name
-    row[43] = updatedCandidate.driveFileId || "" // Drive File ID
-    row[44] = updatedCandidate.driveFileUrl || "" // Drive File URL
+    row[43] = updatedCandidate.filePath || "" // File Path
+    row[44] = updatedCandidate.fileUrl || "" // File URL
     row[45] = updatedCandidate.status || "new" // Status
     row[46] = Array.isArray(updatedCandidate.tags) ? updatedCandidate.tags.join(", ") : "" // Tags
     row[47] = updatedCandidate.rating || "" // Rating
@@ -780,7 +781,7 @@ export async function getAnalytics(period = "all"): Promise<any> {
           email: c.email,
           phone: c.phone,
           technicalSkills: c.technicalSkills,
-          driveFileUrl: c.driveFileUrl,
+          fileUrl: c.fileUrl,
           fileName: c.fileName,
           resumeText: c.resumeText,
           totalExperience: c.totalExperience,
@@ -907,7 +908,12 @@ export async function getCandidateById(candidateId: string): Promise<Comprehensi
     for (let i = 1; i < response.data.values.length; i++) {
       const row = response.data.values[i]
       if (row[0] === candidateId) {
-        return mapRowToCandidateData(row)
+        const candidateData = mapRowToCandidateData(row)
+        // Ensure _id is set for consistency with frontend expectations
+        return {
+          ...candidateData,
+          _id: candidateData.id,
+        }
       }
     }
 
@@ -961,20 +967,20 @@ function mapRowToCandidateData(row: any[]): ComprehensiveCandidateData {
     linkedinProfile: row[35] || "",
     portfolioUrl: row[36] || "",
     githubProfile: row[37] || "",
-    summary: row[38] || "",
-    resumeText: row[39] || "",
-    fileName: row[40] || "",
-    driveFileId: row[41] || "",
-    driveFileUrl: row[42] || "",
-    status: (row[43] as any) || "new",
-    tags: row[44] ? row[44].split(", ").filter(Boolean) : [],
-    rating: row[45] ? parseFloat(row[45]) : undefined,
-    notes: row[46] || "",
-    uploadedAt: row[47] || "",
-    updatedAt: row[48] || "",
-    lastContacted: row[49] || "",
-    interviewStatus: (row[50] as any) || "not-scheduled",
-    feedback: row[51] || "",
+    summary: row[40] || "",
+    resumeText: row[41] || "",
+    fileName: row[42] || "",
+    filePath: row[43] || "",
+    fileUrl: row[44] || "",
+    status: (row[45] as any) || "new",
+    tags: row[46] ? row[46].split(", ").filter(Boolean) : [],
+    rating: row[47] ? parseFloat(row[47]) : undefined,
+    notes: row[48] || "",
+    uploadedAt: row[49] || "",
+    updatedAt: row[50] || "",
+    lastContacted: row[51] || "",
+    interviewStatus: (row[52] as any) || "not-scheduled",
+    feedback: row[53] || "",
   }
 }
 
@@ -1343,25 +1349,25 @@ export async function reparseCandidate(candidateId: string, blobUrl: string, fil
     let resolvedUrl = blobUrl
     const looksLikeUrl = typeof resolvedUrl === "string" && /^https?:\/\//i.test(resolvedUrl)
     if (!looksLikeUrl) {
-      console.log("Blob URL is not a valid URL. Attempting to resolve via Vercel Blob...")
-      // Try using driveFileId (often a pathname) first
+      console.log("URL is not a valid URL. Attempting to resolve via Supabase Storage...")
+      // Try using filePath (often a pathname) first
       if (blobUrl && typeof blobUrl === "string") {
-        const attempt1 = await checkFileExistsInBlob(blobUrl)
+        const attempt1 = await SupabaseCandidateService.checkFileExistsInStorage(blobUrl)
         if (attempt1.exists && attempt1.url) {
           resolvedUrl = attempt1.url
-          console.log("Resolved from driveFileId/pathname:", resolvedUrl)
+          console.log("Resolved from filePath/pathname:", resolvedUrl)
         }
       }
       // Try using provided fileName
       if (!/^https?:\/\//i.test(resolvedUrl) && fileName) {
-        const attempt2 = await checkFileExistsInBlob(fileName)
+        const attempt2 = await SupabaseCandidateService.checkFileExistsInStorage(fileName)
         if (attempt2.exists && attempt2.url) {
           resolvedUrl = attempt2.url
           console.log("Resolved from fileName:", resolvedUrl)
         }
       }
       if (!/^https?:\/\//i.test(resolvedUrl)) {
-        throw new Error(`Unable to resolve a valid blob URL for reparsing. Got "${blobUrl}"`) 
+        throw new Error(`Unable to resolve a valid file URL for reparsing. Got "${blobUrl}"`) 
       }
     }
 
@@ -1501,8 +1507,8 @@ export async function bulkReparseCandidates(): Promise<{ success: number; failed
     
     for (const candidate of candidatesWithIssues) {
       try {
-        if (candidate.driveFileUrl && candidate.fileName) {
-          await reparseCandidate(candidate.id!, candidate.driveFileUrl, candidate.fileName)
+        if (candidate.fileUrl && candidate.fileName) {
+          await reparseCandidate(candidate.id!, candidate.fileUrl, candidate.fileName)
           successCount++
           console.log(`✅ Reparsed candidate: ${candidate.name || candidate.id}`)
         } else {

@@ -5,9 +5,11 @@ export async function POST(request: NextRequest) {
   try {
     console.log("=== Admin Data Realignment Request ===")
 
-    // Check if this is an admin request (you can add authentication here)
+    // Authorization: require login cookie or valid admin token
+    const authCookie = request.cookies.get("auth")?.value
     const authHeader = request.headers.get("authorization")
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    const hasAdminToken = authHeader === `Bearer ${process.env.ADMIN_TOKEN}`
+    if (authCookie !== "true" && !hasAdminToken) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
@@ -51,4 +53,4 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     )
   }
-} 
+}

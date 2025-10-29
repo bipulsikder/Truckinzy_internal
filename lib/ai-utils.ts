@@ -1,7 +1,8 @@
 import { GoogleGenerativeAI } from "@google/generative-ai"
-import { getAllCandidates } from "./google-sheets"
+import { SupabaseCandidateService } from "./supabase-candidates"
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "")
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash-latest"
 
 export async function generateEmbedding(text: string): Promise<number[]> {
   console.log("=== Generating Embedding ===")
@@ -53,10 +54,10 @@ export async function generateJobDescriptionWithEmbeddings(
   }
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" })
+    const model = genAI.getGenerativeModel({ model: DEFAULT_GEMINI_MODEL })
 
-    // Get all candidates from database
-    const allCandidates = await getAllCandidates()
+    // Get all candidates from Supabase database
+    const allCandidates = await SupabaseCandidateService.getAllCandidates()
     console.log(`📊 Total candidates in database: ${allCandidates.length}`)
 
     let similarCandidates: any[] = []
@@ -88,8 +89,8 @@ export async function generateJobDescriptionWithEmbeddings(
             // Check for similar keywords
             const jobKeywords = jobTitle.split(/\s+/)
             const roleKeywords = roleText.toLowerCase().split(/\s+/)
-            const commonKeywords = jobKeywords.filter((keyword) =>
-              roleKeywords.some((roleKeyword) => roleKeyword.includes(keyword) || keyword.includes(roleKeyword)),
+            const commonKeywords = jobKeywords.filter((keyword: string) =>
+              roleKeywords.some((roleKeyword: string) => roleKeyword.includes(keyword) || keyword.includes(roleKeyword)),
             )
             similarity += (commonKeywords.length / jobKeywords.length) * 0.5
 
@@ -117,116 +118,23 @@ export async function generateJobDescriptionWithEmbeddings(
 
         matchedCandidates = similarCandidates.length
         console.log(`🎯 Found ${matchedCandidates} similar candidates`)
-
-        // Generate database insights
-        if (similarCandidates.length > 0) {
-          const commonSkills = new Map<string, number>()
-          const commonCompanies = new Map<string, number>()
-          const experienceLevels: string[] = []
-
-          similarCandidates.forEach((candidate) => {
-            // Count skills
-            candidate.technicalSkills?.forEach((skill: string) => {
-              commonSkills.set(skill, (commonSkills.get(skill) || 0) + 1)
-            })
-
-            // Count companies
-            if (candidate.currentCompany) {
-              commonCompanies.set(candidate.currentCompany, (commonCompanies.get(candidate.currentCompany) || 0) + 1)
-            }
-
-            // Collect experience
-            if (candidate.totalExperience) {
-              experienceLevels.push(candidate.totalExperience)
-            }
-          })
-
-          // Top skills
-          const topSkills = Array.from(commonSkills.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 5)
-            .map(([skill]) => skill)
-
-          // Top companies
-          const topCompanies = Array.from(commonCompanies.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 3)
-            .map(([company]) => company)
-
-          databaseInsights = [
-            `Most common skills: ${topSkills.join(", ")}`,
-            `Common previous companies: ${topCompanies.join(", ")}`,
-            `Experience range: ${Math.min(...experienceLevels.map((exp) => Number.parseInt(exp) || 0))} - ${Math.max(...experienceLevels.map((exp) => Number.parseInt(exp) || 0))} years`,
-            `${similarCandidates.filter((c) => c.certifications?.length > 0).length} candidates have relevant certifications`,
-          ]
-        }
-      } catch (embeddingError) {
-        console.log("Embedding search failed, using basic text matching")
-        // Fallback to basic text matching
-        similarCandidates = allCandidates
-          .filter((candidate) => {
-            const roleText = `${candidate.currentRole} ${candidate.desiredRole || ""}`.toLowerCase()
-            const jobTitle = customInputs.jobTitle.toLowerCase()
-            return roleText.includes(jobTitle) || jobTitle.includes(candidate.currentRole?.toLowerCase() || "")
-          })
-          .slice(0, 10)
-
-        matchedCandidates = similarCandidates.length
-        databaseInsights = [`Found ${matchedCandidates} candidates with similar roles using text matching`]
+      } catch (error) {
+        console.log("Embedding-based similarity failed, continuing without embeddings:", error)
       }
     }
 
-    // Combine reference candidates with similar candidates from database
-    const allReferenceCandidates = [
-      ...referenceCandidates,
-      ...similarCandidates.slice(0, 10), // Add top 10 from database
-    ]
+    // Create prompt with insights from database
+    const databaseInsightsText = similarCandidates
+      .map((candidate, index) => {
+        const topSkills = (candidate.technicalSkills || []).slice(0, 6).join(", ")
+        return `${index + 1}. ${candidate.name} – Role: ${candidate.currentRole || "N/A"} – Skills: ${topSkills}`
+      })
+      .join("\n")
 
-    // Create comprehensive prompt
-    const prompt = `You are an expert HR professional creating a comprehensive job description. Use the provided information to create a realistic, industry-specific job description.
-
-JOB REQUIREMENTS:
-- Job Title: ${customInputs.jobTitle}
-- Company: ${customInputs.company || "Company Name"}
-- Location: ${customInputs.location || "Location"}
-- Experience Required: ${customInputs.experience || "As per requirement"}
-- Salary Range: ${customInputs.salaryRange || "Competitive"}
-- Additional Requirements: ${customInputs.additionalRequirements || "None"}
-
-DATABASE INSIGHTS (${matchedCandidates} similar profiles found):
-${databaseInsights.map((insight) => `• ${insight}`).join("\n")}
-
-REFERENCE CANDIDATES:
-${allReferenceCandidates
-  .slice(0, 10)
-  .map(
-    (candidate) => `
-- Name: ${candidate.name}
-- Role: ${candidate.currentRole}
-- Experience: ${candidate.totalExperience}
-- Skills: ${(candidate.technicalSkills || []).slice(0, 10).join(", ")}
-- Company: ${candidate.currentCompany || "Not specified"}
-- Achievements: ${(candidate.keyAchievements || []).slice(0, 3).join("; ")}
-- Certifications: ${(candidate.certifications || []).slice(0, 3).join(", ")}
-`,
-  )
-  .join("\n")}
-
-Create a comprehensive job description that includes:
-
-1. **Job Description**: 2-3 paragraph overview that accurately describes the role based on database insights
-2. **Key Responsibilities**: 6-8 specific, actionable responsibilities based on what similar candidates actually do
-3. **Requirements**: 6-8 requirements including education, experience, and certifications found in similar profiles
-4. **Required Skills**: Technical and soft skills commonly found in similar roles in your database
-5. **Benefits**: Competitive benefits package appropriate for this role level and industry
-
-IMPORTANT GUIDELINES:
-- Use insights from the database to make the JD realistic and accurate
-- Include responsibilities that similar candidates in your database actually perform
-- Make requirements achievable based on your candidate pool
-- Use industry-specific terminology found in similar profiles
-- Consider the experience level and adjust complexity accordingly
-- Include both technical skills and soft skills from database analysis
+    const prompt = `You are an expert HR assistant.
+Generate a detailed job description tailored for the role: "${customInputs.jobTitle}".
+Use relevant insights from our database of candidates:
+${databaseInsightsText || "No exact matches found; infer based on role."}
 
 Return ONLY a valid JSON object with this exact structure:
 {
@@ -244,22 +152,24 @@ Return ONLY a valid JSON object with this exact structure:
 }`
 
     console.log("Sending enhanced JD generation request to Gemini...")
-    const result = await model.generateContent(prompt)
-    const response = await result.response
-    let responseText = response.text()
-
-    // Clean the response
-    responseText = responseText
-      .replace(/```json\n?/g, "")
-      .replace(/```\n?/g, "")
-      .trim()
-
-    console.log("✅ Enhanced JD generation response received")
+    let responseText: string | null = null
+    try {
+      const result = await model.generateContent(prompt)
+      const response = await result.response
+      responseText = response.text()
+      responseText = responseText
+        .replace(/```json\n?/g, "")
+        .replace(/```\n?/g, "")
+        .trim()
+      console.log("✅ Enhanced JD generation response received")
+    } catch (genError) {
+      const msg = String(genError instanceof Error ? genError.message : genError)
+      console.log("⚠️ Gemini generateContent failed, using rule-based fallback:", msg)
+      return { jobDescription: buildFallbackJD(customInputs, matchedCandidates, databaseInsights) }
+    }
 
     try {
-      const parsedJD = JSON.parse(responseText)
-
-      // Ensure all required fields exist with defaults
+      const parsedJD = JSON.parse(responseText || "{}")
       const jobDescription = {
         title: parsedJD.title || customInputs.jobTitle,
         company: parsedJD.company || customInputs.company || "Company Name",
@@ -275,16 +185,64 @@ Return ONLY a valid JSON object with this exact structure:
         matchedCandidates,
         databaseInsights,
       }
-
       console.log("✅ Enhanced JD generation successful")
       return { jobDescription }
     } catch (parseError) {
-      console.error("❌ Failed to parse JD JSON response:", parseError)
-      throw new Error("Invalid JSON response from Gemini")
+      console.log("⚠️ Invalid JSON from Gemini, falling back to rule-based JD")
+      return { jobDescription: buildFallbackJD(customInputs, matchedCandidates, databaseInsights) }
     }
   } catch (error) {
     console.error("❌ Enhanced JD generation failed:", error)
-    throw error
+    return { jobDescription: buildFallbackJD(customInputs, 0, []) }
+  }
+}
+
+function buildFallbackJD(customInputs: any, matchedCandidates: number, databaseInsights: string[]) {
+  const baseSkills = [
+    'gps tracking','fleet management','route optimization','driver management','communication','team management','problem solving','data analysis'
+  ]
+  const title = customInputs.jobTitle || 'Role'
+  const company = customInputs.company || 'Company Name'
+  const location = customInputs.location || 'Location'
+  const experience = customInputs.experience || 'As per requirement'
+  const salary = customInputs.salaryRange || ''
+  const description = `We are hiring a ${title} at ${company} in ${location}. The role involves coordinating drivers, optimizing routes, monitoring GPS and compliance, and collaborating with operations. Candidates should have ${experience} and strong communication skills.`
+  return {
+    title,
+    company,
+    location,
+    type: 'Full-time',
+    experience,
+    salary,
+    description,
+    responsibilities: [
+      'Coordinate daily driver assignments and schedules',
+      'Monitor GPS and route adherence',
+      'Optimize routes for efficiency and cost',
+      'Ensure compliance with safety and DOT regulations',
+      'Communicate with drivers and resolve on-road issues',
+      'Maintain logs and reports for fleet operations',
+      'Collaborate with warehouse and dispatch teams',
+      'Escalate critical incidents and follow SOPs'
+    ],
+    requirements: [
+      'Graduate or equivalent experience in logistics',
+      '3+ years in fleet/transport operations',
+      'Hands-on with GPS/fleet tools',
+      'Knowledge of safety and compliance',
+      'Strong communication and problem solving',
+      'Ability to work shifts and on-call as needed'
+    ],
+    skills: baseSkills,
+    benefits: [
+      'Competitive salary',
+      'Health insurance',
+      'Paid time off',
+      'Performance incentives',
+      'Growth opportunities'
+    ],
+    matchedCandidates,
+    databaseInsights,
   }
 }
 
@@ -293,18 +251,112 @@ export async function generateJobDescription(candidateProfiles: any[], customInp
   return generateJobDescriptionWithEmbeddings(customInputs || {}, candidateProfiles, false)
 }
 
+export function extractKeywordsFromSentence(sentence: string): string[] {
+  if (!sentence || typeof sentence !== 'string') return [];
+  
+  // Comprehensive stop words list including irrelevant words
+  const stopWords = new Set([
+    // Basic articles, prepositions, conjunctions
+    'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'with', 
+    'by', 'about', 'as', 'into', 'like', 'through', 'after', 'over', 'between', 
+    'out', 'of', 'from', 'up', 'down', 'under', 'above', 'below', 'across', 'around',
+    
+    // Verbs and auxiliary verbs
+    'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 
+    'do', 'does', 'did', 'will', 'would', 'shall', 'should', 'may', 'might', 
+    'must', 'can', 'could', 'get', 'got', 'getting', 'go', 'going', 'went', 'gone',
+    
+    // Pronouns
+    'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 
+    'my', 'your', 'his', 'hers', 'its', 'our', 'their', 'mine', 'yours', 'theirs',
+    
+    // Question words and demonstratives
+    'who', 'whom', 'which', 'what', 'where', 'when', 'why', 'how', 'this', 'that', 
+    'these', 'those', 'here', 'there', 'now', 'then',
+    
+    // Common irrelevant words mentioned by user
+    'okay', 'ok', 'all', 'not', 'no', 'yes', 'well', 'so', 'just', 'only', 'also', 
+    'too', 'very', 'much', 'many', 'more', 'most', 'some', 'any', 'each', 'every',
+    
+    // Search-related filler words
+    'search', 'find', 'look', 'filter', 'sort', 'show', 'hide', 'view', 'display',
+  ]);
+
+  // Split into words and basic normalization
+  const words = sentence
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w && !stopWords.has(w));
+
+  // Extract multi-word phrases commonly found in logistics
+  const phrases = [] as string[];
+  const phrasePatterns = [
+    /fleet management/gi,
+    /route optimization/gi,
+    /supply chain management/gi,
+    /inventory management/gi,
+    /warehouse management/gi,
+    /transportation management/gi,
+    /driver management/gi,
+    /fuel management/gi,
+    /maintenance scheduling/gi,
+    /international fuel tax agreement/gi,
+  ];
+
+  const blacklist = new Set([
+    'manager', 'management', 'team', 'lead', 'leader', 'good', 'bad', 'best', 'ok', 'okay',
+    'work', 'worked', 'working', 'experience', 'experienced', 'years', 'year', 'month', 'months',
+  ]);
+
+  for (const pattern of phrasePatterns) {
+    const match = sentence.toLowerCase().match(pattern);
+    if (match) {
+      phrases.push(match[0].toLowerCase());
+    }
+  }
+
+  // Extract domain-specific terms
+  const foundTerms = [] as string[];
+  const domainTerms = [
+    'gps', 'gps tracking', 'tracking', 'fleet', 'fleet management', 'route', 'route optimization',
+    'supply chain', 'supply chain management', 'inventory', 'inventory management', 'warehouse', 'warehouse management',
+    'transportation', 'transportation management', 'driver', 'driver management', 'fuel', 'fuel management',
+    'maintenance', 'maintenance scheduling', 'compliance', 'safety', 'dot', 'ifta', 'international fuel tax agreement',
+  ];
+
+  for (const term of domainTerms) {
+    if (sentence.toLowerCase().includes(term)) {
+      foundTerms.push(term);
+    }
+  }
+
+  const locationMatch = sentence.toLowerCase().match(/in ([a-zA-Z\s]+)/);
+  if (locationMatch) {
+    phrases.push(locationMatch[1].toLowerCase());
+  }
+  
+  // Combine all keywords and remove duplicates
+  let allKeywords = [...new Set([...words, ...phrases, ...foundTerms])];
+  
+  // Final filter: remove blacklisted and overly generic terms
+  allKeywords = allKeywords.filter(k => k && !blacklist.has(k));
+  
+  return allKeywords;
+}
+
 export async function searchCandidates(query: string, candidates: any[]): Promise<any[]> {
   console.log("=== AI-Powered Search ===")
   console.log("Search query:", query)
   console.log("Total candidates:", candidates.length)
 
   if (!process.env.GEMINI_API_KEY) {
-    console.log("⚠️ GEMINI_API_KEY not configured, using basic search")
-    return basicSearch(query, candidates)
+    console.log("⚠️ GEMINI_API_KEY not configured, using weighted local search")
+    return weightedLocalSearch(query, candidates)
   }
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" })
+    const model = genAI.getGenerativeModel({ model: DEFAULT_GEMINI_MODEL })
 
     // Create candidate summaries for AI analysis (cap size and field lengths to avoid 5xx/overload)
     const safeStr = (v: any, max = 120): string => {
@@ -388,127 +440,81 @@ Return format: ["candidate_id_1", "candidate_id_2", ...]`
         .map((id: string, index: number) => {
           const candidate = candidates.find((c) => (c.id || c._id) === id)
           if (candidate) {
+            const matchingKeywords = extractMatchingKeywords(query, candidate)
+            const relevanceScore = Math.max(0.1, 1 - index / rankedIds.length)
+            // Calculate a realistic match percentage based on position and keyword matches
+            const matchPercentage = Math.min(
+              100, 
+              Math.round(relevanceScore * 80 + Math.min(matchingKeywords.length * 3, 20))
+            )
+
             return {
               ...candidate,
-              relevanceScore: Math.max(0.1, 1 - index / rankedIds.length),
-              matchingKeywords: extractMatchingKeywords(query, candidate),
+              relevanceScore,
+              matchPercentage,
+              matchingKeywords,
             }
           }
           return null
         })
         .filter(Boolean)
 
-      console.log("✅ AI search completed, returning", rankedCandidates.length, "results")
       return rankedCandidates
     } catch (parseError) {
-      console.error("❌ Failed to parse AI search response, falling back to weighted search")
+      console.log("AI ranking parse failed, using weighted local search")
       return weightedLocalSearch(query, candidates)
     }
   } catch (error) {
-    console.error("❌ AI search failed, falling back to weighted search:", error)
+    console.error("Gemini search failed, falling back to weighted local search:", error)
     return weightedLocalSearch(query, candidates)
   }
 }
 
 function weightedLocalSearch(query: string, candidates: any[]): any[] {
-  const q = (query || "").trim().toLowerCase()
-  if (!q) return []
-  const terms = q.split(/\s+/).filter(t => t.length > 1)
-  const phrase = q.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim()
+  const q = (query || '').toLowerCase()
+  const terms = q.split(/\s+/).filter(Boolean)
 
-  // Field weights and getters
-  const getFieldText = (c: any, key: string): string => {
-    switch (key) {
-      case "name": return c.name || ""
-      case "currentRole": return c.currentRole || ""
-      case "desiredRole": return c.desiredRole || ""
-      case "technicalSkills": return (c.technicalSkills || []).join(" ")
-      case "softSkills": return (c.softSkills || []).join(" ")
-      case "currentCompany": return c.currentCompany || ""
-      case "location": return c.location || ""
-      case "summary": return c.summary || ""
-      case "resumeText": return c.resumeText || ""
-      default: return ""
-    }
-  }
-  const fieldWeights: Record<string, number> = {
-    name: 0.2,
-    currentRole: 0.35,
-    desiredRole: 0.2,
-    technicalSkills: 0.3,
-    softSkills: 0.1,
-    currentCompany: 0.1,
-    location: 0.15,
-    summary: 0.15,
-    resumeText: 0.1,
-  }
-
-  const scored = candidates.map((c) => {
-    let score = 0
-    let coverageHits = 0
-    const matches: string[] = []
-
-    // Phrase boost by field
-    Object.keys(fieldWeights).forEach((key) => {
-      const text = getFieldText(c, key).toLowerCase()
-      if (!text) return
-      if (phrase && text.includes(phrase)) {
-        score += fieldWeights[key] * 1.2
-        matches.push(phrase)
+  const scoreCandidate = (c: any): number => {
+    let s = 0
+    const fields = [
+      c.currentRole, c.desiredRole, (c.technicalSkills || []).join(' '), c.location, c.summary || '', c.resumeText || ''
+    ].map(v => (v || '').toLowerCase())
+    for (const t of terms) {
+      for (const f of fields) {
+        if (f.includes(t)) s += 1
       }
+    }
+    s += Math.min(terms.length, 8) * 0.5
+    return s
+  }
+
+  const sorted = [...candidates]
+    .map(c => ({ c, s: scoreCandidate(c) }))
+    .sort((a, b) => b.s - a.s)
+    .map(({ c }, i, arr) => {
+      const matchingKeywords = extractMatchingKeywords(query, c)
+      const relevanceScore = Math.max(0.1, 1 - i / arr.length)
+      const matchPercentage = Math.min(
+        100, 
+        Math.round(relevanceScore * 80 + Math.min(matchingKeywords.length * 3, 20))
+      )
+      return { ...c, relevanceScore, matchPercentage, matchingKeywords }
     })
 
-    // Term-level scoring with word-boundary regex
-    for (const term of terms) {
-      const boundary = new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")
-      let termHit = false
-      Object.keys(fieldWeights).forEach((key) => {
-        const text = getFieldText(c, key).toLowerCase()
-        if (!text) return
-        if (boundary.test(text)) {
-          termHit = true
-          // scale by occurrences (capped)
-          const occ = (text.match(boundary) || []).length
-          const occBoost = Math.min(1, occ * 0.25)
-          score += fieldWeights[key] * (0.6 + occBoost)
-          matches.push(term)
-        }
-      })
-      if (termHit) coverageHits += 1
-    }
-
-    // Coverage bonus: encourage profiles that hit most terms
-    if (terms.length > 0) {
-      const coverage = coverageHits / terms.length
-      score += 0.2 * coverage
-    }
-
-    // Normalize 0..1
-    const normalized = Math.max(0, Math.min(1, score))
-    return {
-      ...c,
-      relevanceScore: normalized,
-      matchingKeywords: [...new Set(matches)].filter(Boolean),
-    }
-  })
-
-  // Keep only meaningful matches and cap list size to reduce noise
-  return scored
-    .filter((c) => (c.relevanceScore || 0) >= 0.15)
-    .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
-    .slice(0, 200)
+  return sorted
 }
 
 function extractMatchingKeywords(query: string, candidate: any): string[] {
-  const queryTerms = query.toLowerCase().split(/\s+/)
-  const candidateText = [
-    candidate.currentRole || "",
-    candidate.location || "",
-    ...(candidate.technicalSkills || []),
-    candidate.currentCompany || "",
-  ]
-    .join(" ")
-    .toLowerCase()
+  const q = (query || '').toLowerCase()
+  const terms = q.split(/\s+/).filter(Boolean)
+  const profileText = [
+    candidate.currentRole, candidate.desiredRole, (candidate.technicalSkills || []).join(' '), candidate.location,
+    candidate.summary || '', candidate.resumeText || ''
+  ].join(' ').toLowerCase()
 
-  return queryTerms.filter((term) => term.length > 2 && candidateText.includes(term))
+  const matches = new Set<string>()
+  for (const t of terms) {
+    if (profileText.includes(t)) matches.add(t)
+  }
+  return Array.from(matches)
 }
