@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Search, Download, Eye, Filter, User, MapPin, Briefcase, Building, Trash2, RefreshCw, Star } from "lucide-react"
+import { Search, Download, Eye, Filter, User, MapPin, Briefcase, Building, RefreshCw, Star } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { CandidatePreviewDialog } from "./candidate-preview-dialog"
 import { useCandidates } from "@/contexts/candidate-context"
@@ -614,7 +614,7 @@ export function CandidateDashboard() {
         <div className="space-y-2">
           <p className="text-sm text-gray-600">
             Showing <span className="font-medium">{filteredCandidates.length}</span> of{" "}
-            <span className="font-medium">{candidates.length}</span> candidates
+            <span className="font-medium">{total}</span> candidates
           </p>
           {(() => {
             const issuesCount = filteredCandidates.filter(hasParsingIssues).length
@@ -797,14 +797,7 @@ export function CandidateDashboard() {
                       </Button>
                     )}
 
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={() => deleteCandidate(candidate._id, candidate.name)}
-                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    
 
                     <Button 
                       variant="outline" 
@@ -944,14 +937,7 @@ export function CandidateDashboard() {
                       </Button>
                     )}
 
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={() => deleteCandidate(candidate._id, candidate.name)}
-                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    
 
                     <Button 
                       variant="outline" 

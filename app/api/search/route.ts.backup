@@ -119,7 +119,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const searchType   = searchParams.get('type') ?? 'smart'
     const query        = searchParams.get('keywords') ?? searchParams.get('query') ?? ''
-    const jobDescription = searchParams.get('jobDescription') ?? searchParams.get('jd') ?? ''
+    const jobDescription = searchParams.get('jobDescription') ?? ''
     const paginate     = searchParams.get('paginate') === 'true'
     const page         = Number(searchParams.get('page') ?? '1')
     const perPage      = Number(searchParams.get('perPage') ?? '20')
@@ -171,73 +171,77 @@ export async function GET(request: NextRequest) {
 
     switch (searchType) {
       case "smart":
-        // Enhanced TruckinzyAI search with deep semantic understanding
+        // Enhanced TruckinzyAI search with deep requirement understanding
         logger.info(`TruckinzyAI search validation: query="${query}" jobDescription="${jobDescription}"`)
         if (!query.trim() && !jobDescription.trim()) {
           return NextResponse.json({ error: "Invalid search parameters", details: "Missing keywords or job description" }, { status: 400 })
         }
         
-        const smartSearchText = query.trim() || jobDescription.trim()
-        console.log("🧠 Processing TruckinzyAI semantic search query:", smartSearchText)
+        console.log("🧠 Processing TruckinzyAI search query:", query)
         
-        // Use Gemini API to deeply understand the requirement with semantic parsing
-        const smartRequirements = await parseSearchRequirement(smartSearchText)
-        console.log("📋 Parsed requirements:", JSON.stringify(smartRequirements, null, 2))
+        // Use Gemini API to deeply understand the requirement
+        const parsedRequirements = await parseSearchRequirement(query)
+        console.log("📋 Parsed requirements:", JSON.stringify(parsedRequirements, null, 2))
         
         // Use intelligent candidate search with parsed requirements
-        results = await intelligentCandidateSearch(smartRequirements, transformedCandidates)
+        results = await intelligentCandidateSearch(parsedRequirements, transformedCandidates)
         
         // Add explanation of why candidates were matched
         results = results.map(candidate => ({
           ...candidate,
-          searchExplanation: `AI semantic match based on: ${candidate.matchingCriteria?.join(', ') || 'profile analysis'}`,
-          aiUnderstanding: smartRequirements,
-          searchType: 'semantic-smart'
+          searchExplanation: `Matched based on: ${candidate.matchingCriteria?.join(', ') || 'profile analysis'}`,
+          aiUnderstanding: parsedRequirements
         }))
         
-        console.log(`🎯 Found ${results.length} relevant candidates with intelligent semantic matching`)
+        console.log(`🎯 Found ${results.length} relevant candidates with intelligent matching`)
         break
 
       case "jd":
-        // JD-based search with intelligent semantic understanding
+        // JD-based search - SEPARATE from manual search
         if (!jobDescription || jobDescription.trim().length === 0) {
           return NextResponse.json({ error: "Job description is required" }, { status: 400 })
         }
         
-        console.log("Using intelligent semantic search for JD mode")
+        // Extract keywords from job description for better matching
+        const extractedJDKeywords = extractKeywordsFromSentence(jobDescription);
+        console.log("Extracted keywords from JD:", extractedJDKeywords);
         
-        // Use Gemini to deeply understand the job description
-        const jdRequirements = await parseSearchRequirement(jobDescription)
-        results = await intelligentCandidateSearch(jdRequirements, transformedCandidates)
+        // Use jdBasedSearch with the original job description
+        results = await jdBasedSearch(jobDescription, transformedCandidates)
         
-        // Add semantic search explanation and JD understanding
+        // Add extracted keywords to the results
         results = results.map(candidate => ({
           ...candidate,
-          searchExplanation: `JD semantic match based on: ${candidate.matchingCriteria?.join(', ') || 'profile analysis'}`,
-          searchType: 'semantic-jd',
-          jdUnderstanding: jdRequirements
+          extractedKeywords: extractedJDKeywords
         }))
         break
 
       case "manual":
-        // Enhanced manual search with intelligent semantic search by default
+        // Enhanced manual search with intelligent filtering
         logger.info(`Enhanced manual search validation: query="${query}" jobDescription="${jobDescription}" filters=${JSON.stringify(filters)}`)
         if (!query.trim() && !jobDescription.trim()) {
           return NextResponse.json({ error: "Invalid search parameters", details: "Provide keywords or job description" }, { status: 400 })
         }
         
-        // Always use intelligent semantic search for manual mode
-        const manualSearchText = jobDescription.trim() || query.trim()
-        console.log("Using intelligent semantic search for manual mode")
-        const requirements = await parseSearchRequirement(manualSearchText)
-        results = await intelligentCandidateSearch(requirements, transformedCandidates)
-        
-        // Add semantic search explanation
-        results = results.map(candidate => ({
-          ...candidate,
-          searchExplanation: `Semantic match based on: ${candidate.matchingCriteria?.join(', ') || 'profile analysis'}`,
-          searchType: 'semantic-manual'
-        }))
+        // If job description is provided, treat it as a natural language query
+        if (jobDescription.trim()) {
+          console.log("Using job description for intelligent search")
+          const requirements = await parseSearchRequirement(jobDescription)
+          results = await intelligentCandidateSearch(requirements, transformedCandidates)
+        } else {
+          // Check if query contains natural language (has spaces and meaningful words)
+          const hasNaturalLanguage = query.trim().includes(' ') && query.trim().length > 5
+          
+          if (hasNaturalLanguage) {
+            console.log("Detected natural language in manual search, using intelligent parsing")
+            const requirements = await parseSearchRequirement(query)
+            results = await intelligentCandidateSearch(requirements, transformedCandidates)
+          } else {
+            console.log("Using simple keyword search for short query")
+            // Use simple keyword-based search for short queries
+            results = await simpleKeywordSearch(query, transformedCandidates)
+          }
+        }
         break
 
       default:

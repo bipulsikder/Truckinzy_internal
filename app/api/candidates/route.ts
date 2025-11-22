@@ -20,6 +20,7 @@ export async function GET(request: NextRequest) {
     const sortBy = searchParams.get('sortBy') ?? 'uploaded_at'
     const sortOrder = (searchParams.get('sortOrder') as 'asc' | 'desc') ?? 'desc'
 
+    logger.info(`GET /api/candidates paginate=${paginate} page=${page} perPage=${perPage} search="${search}"`)
     logger.info(`Fetching candidates from Supabase${paginate ? ' (paginated)' : ''}`)
 
     if (paginate) {
@@ -30,6 +31,7 @@ export async function GET(request: NextRequest) {
         sortOrder,
         search,
       })
+      logger.info(`Supabase returned: page=${page} perPage=${perPage} total=${total} rows=${items.length}`)
 
       const transformedCandidates = items.map((candidate) => ({
         _id: candidate.id,
@@ -85,6 +87,7 @@ export async function GET(request: NextRequest) {
       }))
 
       logger.info(`Paginated: page=${page} perPage=${perPage} total=${total} returned=${transformedCandidates.length}`)
+      logger.info(`Returning paginated: page=${page} perPage=${perPage} total=${total} items=${transformedCandidates.length}`)
 
       return NextResponse.json({ items: transformedCandidates, page, perPage, total })
     }

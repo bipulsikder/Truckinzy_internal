@@ -340,24 +340,26 @@ export function SmartSearch() {
     setIsSearching(true)
     setHasSearched(true)
     setCurrentPage(1)
-    const payload = {
+    
+    const params = new URLSearchParams({
+      type: 'smart',
       query: smartSearchQuery,
-      searchType: "smart",
-      paginate: true,
-      page: 1,
-      perPage: pageSize,
-    }
-    setLastSearchPayload(payload)
+      paginate: 'true',
+      page: String(1),
+      perPage: String(pageSize),
+    }).toString()
+    
+    logger.info(`Smart-search fetch: mode=smart query="${smartSearchQuery.slice(0, 40)}..." page=1`)
     try {
-      const response = await fetch("/api/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      const response = await fetch(`/api/search?${params}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
       })
 
-      if (!response.ok) throw new Error("Search failed")
+      if (!response.ok) throw new Error("Smart search failed")
 
       const data = await response.json()
+      logger.info(`Smart-search result: count=${Array.isArray(data) ? data.length : data.items?.length || 0}`)
       const items = Array.isArray(data) ? data : (data.items || [])
       const total = Array.isArray(data) ? items.length : (data.total || items.length)
       setServerPaginated(!Array.isArray(data))
@@ -401,16 +403,24 @@ export function SmartSearch() {
       perPage: pageSize,
     }
     setLastSearchPayload(payload)
+    logger.info(`Smart-search fetch: mode=jd query="${jobDescription.slice(0, 40)}..." page=1`)
+    const params = new URLSearchParams({
+      type: 'jd',
+      paginate: 'true',
+      page: String(1),
+      perPage: String(pageSize),
+      jd: jobDescription,
+    }).toString()
     try {
-      const response = await fetch("/api/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      const response = await fetch(`/api/search?${params}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
       })
 
       if (!response.ok) throw new Error("JD Search failed")
 
       const data = await response.json()
+      logger.info(`Smart-search result: count=${Array.isArray(data) ? data.length : data.items?.length || 0}`)
       const items = Array.isArray(data) ? data : (data.items || [])
       const total = Array.isArray(data) ? items.length : (data.total || items.length)
       setServerPaginated(!Array.isArray(data))
@@ -446,24 +456,30 @@ export function SmartSearch() {
     setIsSearching(true)
     setHasSearched(true)
     setCurrentPage(1)
-    const payload = {
-      searchType: "manual",
-      filters: manualFilters,
-      paginate: true,
-      page: 1,
-      perPage: pageSize,
-    }
-    setLastSearchPayload(payload)
+    
+    const params = new URLSearchParams({
+      type: 'manual',
+      paginate: 'true',
+      page: String(1),
+      perPage: String(pageSize),
+      keywords: manualFilters.keywords.join(','),
+      location: manualFilters.location,
+      minExperience: manualFilters.minExperience,
+      maxExperience: manualFilters.maxExperience,
+      education: manualFilters.education,
+    }).toString()
+    
+    logger.info(`Smart-search fetch: mode=manual query="${manualFilters.keywords.join(', ').slice(0, 40)}..." page=1`)
     try {
-      const response = await fetch("/api/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      const response = await fetch(`/api/search?${params}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
       })
 
       if (!response.ok) throw new Error("Manual search failed")
 
       const data = await response.json()
+      logger.info(`Smart-search result: count=${Array.isArray(data) ? data.length : data.items?.length || 0}`)
       const items = Array.isArray(data) ? data : (data.items || [])
       const total = Array.isArray(data) ? items.length : (data.total || items.length)
       setServerPaginated(!Array.isArray(data))

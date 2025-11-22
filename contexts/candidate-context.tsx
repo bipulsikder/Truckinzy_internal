@@ -76,6 +76,7 @@ export function CandidateProvider({ children }: { children: ReactNode }) {
         const per = Array.isArray(data) ? perPage : (data.perPage || perPage)
 
         logger.info(`Fetched ${items.length} candidates of total ${totalCount}`)
+        logger.info(`Setting candidates: page=${page} count=${items.length}`)
 
         setCandidates(items)
         setTotal(totalCount)
@@ -91,7 +92,7 @@ export function CandidateProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false)
     }
-  }, [currentPage, pageSize])
+  }, [pageSize])
 
   const refreshCandidates = useCallback(async () => {
     logger.info("Refreshing candidates...")
@@ -110,13 +111,14 @@ export function CandidateProvider({ children }: { children: ReactNode }) {
     await fetchCandidates(nextPage, pageSize)
   }, [hasMore, currentPage, pageSize, fetchCandidates])
 
-  // Fetch on mount and when page/pageSize changes
+  // Fetch on mount and whenever fetchCandidates changes
   useEffect(() => {
-    logger.info("CandidateProvider mounted or pagination changed, fetching candidates...")
+    logger.info("CandidateProvider mounted or fetchCandidates changed, fetching candidates...")
     fetchCandidates(currentPage, pageSize)
   }, [fetchCandidates, currentPage, pageSize])
 
   const setPage = (page: number) => {
+    logger.info(`setPage called: ${page}`)
     setCurrentPage(page)
   }
 
