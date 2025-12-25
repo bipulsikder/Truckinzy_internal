@@ -2,7 +2,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai"
 import { SupabaseCandidateService } from "./supabase-candidates"
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "")
-const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash-latest"
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash"
 
 export async function generateEmbedding(text: string): Promise<number[]> {
   console.log("=== Generating Embedding ===")
@@ -251,6 +251,52 @@ export async function generateJobDescription(candidateProfiles: any[], customInp
   return generateJobDescriptionWithEmbeddings(customInputs || {}, candidateProfiles, false)
 }
 
+export async function extractSearchKeywordsWithAI(query: string): Promise<string[]> {
+  console.log("=== AI Keyword Extraction ===")
+  console.log("Original Query:", query)
+
+  if (!process.env.GEMINI_API_KEY) {
+    console.log("⚠️ GEMINI_API_KEY not configured, falling back to basic extraction")
+    return extractKeywordsFromSentence(query)
+  }
+
+  try {
+    const model = genAI.getGenerativeModel({ 
+      model: DEFAULT_GEMINI_MODEL
+    })
+    
+    const prompt = `You are an expert recruiter search assistant.
+Analyze this search query: "${query}"
+
+Extract ONLY the most critical technical keywords, job titles, and location.
+- Keep multi-word terms together (e.g., "Transport Executive", "Supply Chain", "New Delhi").
+- Remove stop words, numbers (unless part of a title), and generic words like "experience", "looking for", "with".
+- If the query implies a role (e.g., "manage fleet"), convert it to the standard job title (e.g., "Fleet Manager").
+
+Return ONLY a valid JSON array of strings.
+Example Input: "looking for a fleet incharge with 3 years exp in gurgaon"
+Example Output: ["Fleet Incharge", "Gurgaon"]`
+
+    const result = await model.generateContent(prompt)
+    const response = await result.response
+    let text = response.text()
+    
+    // Clean and parse
+    text = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim()
+    const keywords = JSON.parse(text)
+    
+    if (Array.isArray(keywords)) {
+      console.log("✅ AI extracted keywords:", keywords)
+      return keywords
+    }
+    
+    throw new Error("Invalid response format")
+  } catch (error) {
+    console.error("AI extraction failed, falling back to rule-based:", error)
+    return extractKeywordsFromSentence(query)
+  }
+}
+
 export function extractKeywordsFromSentence(sentence: string): string[] {
   if (!sentence || typeof sentence !== 'string') return [];
   
@@ -307,6 +353,7 @@ export function extractKeywordsFromSentence(sentence: string): string[] {
   const blacklist = new Set([
     'manager', 'management', 'team', 'lead', 'leader', 'good', 'bad', 'best', 'ok', 'okay',
     'work', 'worked', 'working', 'experience', 'experienced', 'years', 'year', 'month', 'months',
+    'location', 'locations', 'located', 'based',
   ]);
 
   for (const pattern of phrasePatterns) {
@@ -339,8 +386,12 @@ export function extractKeywordsFromSentence(sentence: string): string[] {
   // Combine all keywords and remove duplicates
   let allKeywords = [...new Set([...words, ...phrases, ...foundTerms])];
   
-  // Final filter: remove blacklisted and overly generic terms
-  allKeywords = allKeywords.filter(k => k && !blacklist.has(k));
+  // Final filter: remove blacklisted, overly generic terms, and pure numbers
+  allKeywords = allKeywords.filter(k => 
+    k && 
+    !blacklist.has(k) && 
+    isNaN(Number(k)) // Remove pure numbers like "3"
+  );
   
   return allKeywords;
 }

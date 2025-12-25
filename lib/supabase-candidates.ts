@@ -128,6 +128,134 @@ export class SupabaseCandidateService {
       parsing_method: 'gemini', // Default to gemini
       parsing_confidence: 0.95, // Default confidence
       parsing_errors: [],
+      embedding: (candidate as any).embedding || null, // Add embedding support
+    } as any
+  }
+
+  // Search candidates using vector similarity
+  static async searchCandidatesByEmbedding(embedding: number[], matchThreshold = 0.5, matchCount = 20): Promise<ComprehensiveCandidateData[]> {
+    try {
+      const { data, error } = await supabase
+        .rpc('match_candidates', {
+          query_embedding: embedding,
+          match_threshold: matchThreshold,
+          match_count: matchCount
+        })
+
+      if (error) {
+        console.error('Error searching candidates by embedding:', error)
+        throw error
+      }
+
+      // Get full candidate data for search results
+      const candidateIds = (data || []).map((result: any) => result.id)
+      
+      if (candidateIds.length === 0) {
+        return []
+      }
+
+      const { data: candidates, error: candidatesError } = await supabase
+        .from('candidates')
+        .select('*')
+        .in('id', candidateIds)
+
+      if (candidatesError) {
+        console.error('Error fetching vector search results:', candidatesError)
+        throw candidatesError
+      }
+
+      // Map candidates and attach relevance scores from vector search
+      return (candidates || []).map(row => {
+        const candidate = this.mapRowToCandidate(row);
+        const match = data.find((r: any) => r.id === row.id);
+        if (match) {
+          (candidate as any).vectorScore = match.similarity;
+        }
+        return candidate;
+      });
+    } catch (error) {
+      console.error('Failed to search candidates by embedding:', error)
+      return []
+    }
+  }
+
+  // Search candidates using Full Text Search (search_vector)
+  static async searchCandidatesByText(query: string, limit: number = 50): Promise<ComprehensiveCandidateData[]> {
+    try {
+      if (!query.trim()) return [];
+
+      // Format query for websearch_to_tsquery or plainto_tsquery
+      // "websearch" handles quotes and +/- better
+      const { data, error } = await supabase
+        .from('candidates')
+        .select('*')
+        .textSearch('search_vector', query, {
+          type: 'websearch',
+          config: 'english'
+        })
+        .limit(limit);
+
+      if (error) {
+        console.error('Error searching candidates by text:', error);
+        throw error;
+      }
+
+      const candidates = (data || []).map(row => this.mapRowToCandidate(row));
+      
+      // We need to attach work/edu for these results too
+      // Reuse the logic from getAllCandidates/getCandidatesPaginated
+      // Ideally extract this to a helper, but for now duplicate inline to be safe
+      const candidateIds = candidates.map(c => c.id).filter((id): id is string => !!id);
+      if (candidateIds.length > 0) {
+         try {
+          const [{ data: workExps }, { data: educations }] = await Promise.all([
+            supabase.from('work_experience').select('*').in('candidate_id', candidateIds),
+            supabase.from('education').select('*').in('candidate_id', candidateIds)
+          ]);
+
+          const workByCandidate = new Map<string, any[]>();
+          const eduByCandidate = new Map<string, any[]>();
+
+          (workExps || []).forEach(exp => {
+            const cid = exp.candidate_id;
+            if (!cid) return;
+            if (!workByCandidate.has(cid)) workByCandidate.set(cid, []);
+            workByCandidate.get(cid)!.push({
+              company: exp.company || '',
+              role: exp.role || '',
+              duration: exp.duration || [(exp.start_date || ''), (exp.end_date || '')].filter(Boolean).join(' - '),
+              description: exp.description || ''
+            });
+          });
+
+          (educations || []).forEach(edu => {
+            const cid = edu.candidate_id;
+            if (!cid) return;
+            if (!eduByCandidate.has(cid)) eduByCandidate.set(cid, []);
+            eduByCandidate.get(cid)!.push({
+              degree: edu.degree || '',
+              specialization: edu.specialization || '',
+              institution: edu.institution || '',
+              year: edu.year || [(edu.start_date || ''), (edu.end_date || '')].filter(Boolean).join(' - '),
+              percentage: edu.percentage || ''
+            });
+          });
+
+          candidates.forEach(c => {
+            if (c.id) {
+                c.workExperience = workByCandidate.get(c.id) || [];
+                c.education = eduByCandidate.get(c.id) || [];
+            }
+          });
+        } catch (bulkErr) {
+          console.warn('Failed attaching detailed experience/education (search):', bulkErr);
+        }
+      }
+
+      return candidates;
+    } catch (error) {
+      console.error('Failed to search candidates by text:', error);
+      return [];
     }
   }
 
@@ -147,7 +275,7 @@ export class SupabaseCandidateService {
       const candidates = (data || []).map(row => this.mapRowToCandidate(row))
 
       // Attach detailed work experience and education in bulk
-      const candidateIds = candidates.map(c => c.id).filter(Boolean)
+      const candidateIds = candidates.map(c => c.id).filter((id): id is string => !!id)
       if (candidateIds.length > 0) {
         try {
           const [{ data: workExps, error: workErr }, { data: educations, error: eduErr }] = await Promise.all([
@@ -185,8 +313,11 @@ export class SupabaseCandidateService {
           })
 
           candidates.forEach(c => {
-            c.workExperience = workByCandidate.get(c.id) || []
-            c.education = eduByCandidate.get(c.id) || []
+            const cid = c.id
+            if (cid) {
+              c.workExperience = workByCandidate.get(cid) || []
+              c.education = eduByCandidate.get(cid) || []
+            }
           })
         } catch (bulkErr) {
           console.warn('Failed attaching detailed experience/education (bulk):', bulkErr)
@@ -279,8 +410,10 @@ export class SupabaseCandidateService {
           })
 
           candidates.forEach(c => {
-            c.workExperience = workByCandidate.get(c.id) || []
-            c.education = eduByCandidate.get(c.id) || []
+            if (c.id) {
+                c.workExperience = workByCandidate.get(c.id) || [];
+                c.education = eduByCandidate.get(c.id) || [];
+            }
           })
         } catch (bulkErr) {
           console.warn('Failed attaching detailed experience/education (paginated):', bulkErr)
@@ -415,14 +548,7 @@ export class SupabaseCandidateService {
               company: exp.company || '',
               role: exp.role || '',
               duration: exp.duration || '',
-              description: exp.description || '',
-              location: null,
-              responsibilities: null,
-              achievements: null,
-              technologies: [],
-              start_date: null,
-              end_date: null,
-              is_current: false
+              description: exp.description || ''
             })
           
           if (insertError) {
@@ -536,14 +662,7 @@ export class SupabaseCandidateService {
               company: exp.company || '',
               role: exp.role || '',
               duration: exp.duration || '',
-              location: exp.location || '',
-              description: exp.description || '',
-              responsibilities: exp.responsibilities || '',
-              achievements: exp.achievements || '',
-              technologies: exp.technologies || [],
-              start_date: exp.startDate || null,
-              end_date: exp.endDate || null,
-              is_current: exp.isCurrent || false
+              description: exp.description || ''
             })
             
           if (insertError) {
@@ -698,23 +817,6 @@ export class SupabaseCandidateService {
     }
   }
   
-  // Delete file from storage
-  static async deleteFile(filePath: string): Promise<{error?: any}> {
-    try {
-      // Clean up the path - remove any leading slashes or bucket prefixes
-      const cleanPath = filePath.replace(/^\/+/, '').replace(/^resume-files\//, '')
-      
-      const { error } = await supabase.storage
-        .from(BUCKET_NAME)
-        .remove([cleanPath])
-      
-      return { error }
-    } catch (error) {
-      console.error('Error deleting file:', error)
-      return { error }
-    }
-  }
-
   // Search candidates using full-text search
   static async searchCandidates(query: string): Promise<ComprehensiveCandidateData[]> {
     try {
@@ -908,8 +1010,6 @@ export class SupabaseCandidateService {
       await this.updateCandidate(candidateId, {
         fileName: file.name,
         fileUrl: publicUrl,
-        fileSize: file.size,
-        fileType: file.type,
       })
 
       return publicUrl

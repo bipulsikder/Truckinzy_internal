@@ -164,7 +164,7 @@ export function SmartSearch() {
 
   // Client-side pagination
   const [currentPage, setCurrentPage] = useState(1)
-  const [pageSize, setPageSize] = useState(20)
+  const [pageSize, setPageSize] = useState(1000)
   // Server-side pagination state
   const [serverPaginated, setServerPaginated] = useState(false)
   const [totalResultsServer, setTotalResultsServer] = useState(0)

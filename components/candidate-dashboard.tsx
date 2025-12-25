@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Search, Download, Eye, Filter, User, MapPin, Briefcase, Building, RefreshCw, Star } from "lucide-react"
+import { Search, Download, Eye, Filter, User, MapPin, Briefcase, Building, RefreshCw, Star, Trash } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { CandidatePreviewDialog } from "./candidate-preview-dialog"
 import { useCandidates } from "@/contexts/candidate-context"
@@ -822,6 +822,16 @@ export function CandidateDashboard() {
                         </>
                       )}
                     </Button>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => deleteCandidate(candidate._id, candidate.name)}
+                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      title="Delete candidate"
+                    >
+                      <Trash className="h-4 w-4" />
+                    </Button>
                   </div>
 
                   <Select
@@ -961,6 +971,16 @@ export function CandidateDashboard() {
                           <RefreshCw className="h-4 w-4" />
                         </>
                       )}
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => deleteCandidate(candidate._id, candidate.name)}
+                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      title="Delete candidate"
+                    >
+                      <Trash className="h-4 w-4" />
                     </Button>
 
                     <Select

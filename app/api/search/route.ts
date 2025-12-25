@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { searchCandidates, extractKeywordsFromSentence } from "@/lib/ai-utils"
+import { generateEmbedding, searchCandidates, extractKeywordsFromSentence, extractSearchKeywordsWithAI } from "@/lib/ai-utils"
 import { SupabaseCandidateService } from "@/lib/supabase-candidates"
 import { logger } from "@/lib/logger"
 import { parseSearchRequirement, intelligentCandidateSearch } from "@/lib/intelligent-search"
@@ -104,7 +104,7 @@ async function jdBasedSearch(jobDescription: string, candidates: any[]): Promise
 // Simple in-memory cache to reduce repeated full-sheet reads during rapid searches
 let candidatesCache: any[] | null = null
 let candidatesCacheAt = 0
-const CANDIDATES_CACHE_MS = 60_000
+const CANDIDATES_CACHE_MS = 5_000 // Reduced to 5 seconds to prevent phantom profiles
 
 export async function GET(request: NextRequest) {
   // Authorization: require login cookie or valid admin token
@@ -138,23 +138,150 @@ export async function GET(request: NextRequest) {
     console.log("Filters:", filters)
     logger.info(`Search request: type=${searchType} query="${query}" jd=${!!jobDescription} filters=${JSON.stringify(filters)}`)
 
-    // Get all candidates from Supabase (with short cache)
-    const now = Date.now()
-    if (!candidatesCache || now - candidatesCacheAt > CANDIDATES_CACHE_MS) {
+    // Determine initial candidate pool
+    let allCandidates: any[] = []
+    
+    // If we have a direct text query, prioritize DB Full Text Search
+    // This solves "irrelevant results" by ensuring candidates match the keywords
+    if (query && query.trim().length > 0) {
       try {
-        const fresh = await SupabaseCandidateService.getAllCandidates()
-        candidatesCache = fresh
-        candidatesCacheAt = now
+        console.log(`Using DB Full Text Search for query: "${query}"`);
+        // 1. Try strict search first
+        allCandidates = await SupabaseCandidateService.searchCandidatesByText(query, 500);
+        console.log(`Strict DB Search returned ${allCandidates.length} candidates`);
+
+        // 2. If strict search yields few results, try AI-enhanced keyword search
+        // This solves the issue where "Transport Executive" is split into "Transport" and "Executive"
+        if (allCandidates.length < 50) {
+           console.log("Strict search yielded few results, using AI to extract optimal keywords...");
+           
+           try {
+             // Use Gemini to extract meaningful phrases (e.g. "Transport Executive", "Gurgaon")
+             const aiKeywords = await extractSearchKeywordsWithAI(query);
+             
+             // Quote multi-word phrases so Postgres 'websearch' treats them as a unit
+             const formattedQuery = aiKeywords.map(k => k.includes(' ') ? `"${k}"` : k).join(' ');
+             
+             if (formattedQuery.length > 0 && formattedQuery !== query) {
+               console.log(`AI Refined Search Query: ${formattedQuery}`);
+               const aiResults = await SupabaseCandidateService.searchCandidatesByText(formattedQuery, 500);
+               
+               // Merge results
+               const existingIds = new Set(allCandidates.map(c => c.id));
+               let addedCount = 0;
+               aiResults.forEach(c => {
+                 if (c.id && !existingIds.has(c.id)) {
+                   allCandidates.push(c);
+                   existingIds.add(c.id);
+                   addedCount++;
+                 }
+               });
+               console.log(`AI search added ${addedCount} unique candidates`);
+             }
+           } catch (aiError) {
+             console.error("AI search refinement failed:", aiError);
+           }
+         }
       } catch (error) {
-        console.error("Error fetching candidates from Supabase:", error)
-        // Return empty array if Supabase fails
-        candidatesCache = []
-        candidatesCacheAt = now
+        console.error("DB Text Search failed, falling back to cache:", error);
+      }
+
+      // 3. Vector Search (Semantic Search)
+      // This solves the issue where keywords don't match but meaning does (e.g. "Fleet Manager" vs "Transport Supervisor")
+      try {
+        console.log(`Generating embedding for vector search: "${query}"`);
+        const embedding = await generateEmbedding(query);
+        
+        if (embedding && embedding.length > 0) {
+          console.log("Executing vector search...");
+          const vectorResults = await SupabaseCandidateService.searchCandidatesByEmbedding(embedding, 0.6, 50); // 0.6 threshold, top 50
+          console.log(`Vector search returned ${vectorResults.length} candidates`);
+          
+          // Merge vector results
+          const existingIds = new Set(allCandidates.map(c => c.id));
+          let addedCount = 0;
+          vectorResults.forEach(c => {
+            if (c.id && !existingIds.has(c.id)) {
+              // Add a flag to indicate this came from vector search
+              (c as any).source = 'vector';
+              allCandidates.push(c);
+              existingIds.add(c.id);
+              addedCount++;
+            }
+          });
+          console.log(`Vector search added ${addedCount} unique candidates`);
+        }
+      } catch (vectorError) {
+        console.error("Vector search failed:", vectorError);
       }
     }
-    const allCandidates = candidatesCache
-    console.log("Total candidates:", allCandidates.length)
-    logger.info(`Supabase returned: rows=${candidatesCache.length}`)
+
+    // If we have a Job Description, use it for vector search as well
+    if (jobDescription && jobDescription.trim().length > 0) {
+      try {
+        console.log(`Generating embedding for JD search...`);
+        // Truncate JD to avoid token limits if necessary, though Gemini handles large context well
+        const embedding = await generateEmbedding(jobDescription.slice(0, 8000));
+        
+        if (embedding && embedding.length > 0) {
+          console.log("Executing vector search for JD...");
+          const vectorResults = await SupabaseCandidateService.searchCandidatesByEmbedding(embedding, 0.5, 50); // Lower threshold for long text
+          console.log(`JD vector search returned ${vectorResults.length} candidates`);
+          
+          // Merge vector results
+          const existingIds = new Set(allCandidates.map(c => c.id));
+          let addedCount = 0;
+          vectorResults.forEach(c => {
+            if (c.id && !existingIds.has(c.id)) {
+              (c as any).source = 'vector-jd';
+              allCandidates.push(c);
+              existingIds.add(c.id);
+              addedCount++;
+            }
+          });
+          console.log(`JD vector search added ${addedCount} unique candidates`);
+        }
+      } catch (vectorError) {
+        console.error("JD vector search failed:", vectorError);
+      }
+    }
+
+    // Fallback to cache/fetch-all if DB search returned too few results
+    // This ensures intelligent search (which runs later) has a sufficient pool to work with
+    // even if the FTS missed some relevant candidates due to strict matching.
+    if (allCandidates.length < 50) {
+      console.log(`Candidate pool small (${allCandidates.length}), fetching full list for AI filtering...`);
+      const now = Date.now()
+      if (!candidatesCache || now - candidatesCacheAt > CANDIDATES_CACHE_MS) {
+        try {
+          const fresh = await SupabaseCandidateService.getAllCandidates()
+          candidatesCache = fresh
+          candidatesCacheAt = now
+        } catch (error) {
+          console.error("Error fetching candidates from Supabase:", error)
+          // Return empty array if Supabase fails
+          candidatesCache = []
+          candidatesCacheAt = now
+        }
+      }
+      
+      // Merge cached candidates into allCandidates
+      const cache = candidatesCache || []
+      const existingIds = new Set(allCandidates.map(c => c.id));
+      let addedFromCache = 0;
+      
+      cache.forEach(c => {
+        if (c.id && !existingIds.has(c.id)) {
+          allCandidates.push(c);
+          existingIds.add(c.id);
+          addedFromCache++;
+        }
+      });
+      console.log(`Added ${addedFromCache} candidates from cache/full-fetch`);
+    }
+
+    console.log("Total candidates for processing:", allCandidates.length)
+    logger.info(`Candidates pool size: ${allCandidates.length}`)
 
     // Transform data to ensure consistency
     const transformedCandidates = allCandidates.map((candidate) => ({

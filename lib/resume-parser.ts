@@ -21,7 +21,11 @@ export async function parseResume(file: any): Promise<ComprehensiveCandidateData
           const result = await parseResumeWithOpenRouter(file)
           if (isValidParsedData(result)) {
             console.log("✅ OpenRouter parsing successful")
-            return result
+            return {
+              ...result,
+              filePath: "",
+              fileUrl: ""
+            } as unknown as ComprehensiveCandidateData
           } else {
             console.log("⚠️ OpenRouter parsing failed validation, trying Gemini...")
           }
@@ -39,7 +43,11 @@ export async function parseResume(file: any): Promise<ComprehensiveCandidateData
           const result = await parseResumeWithOpenRouter(file)
           if (isValidParsedData(result)) {
             console.log("✅ OpenRouter parsing successful for PDF")
-            return result
+            return {
+              ...result,
+              filePath: "",
+              fileUrl: ""
+            } as unknown as ComprehensiveCandidateData
           } else {
             console.log("⚠️ OpenRouter parsing failed validation for PDF, trying basic parsing...")
           }
@@ -56,7 +64,11 @@ export async function parseResume(file: any): Promise<ComprehensiveCandidateData
         const result = await parseResumeWithGemini(file)
         if (isValidParsedData(result)) {
           console.log("✅ Gemini parsing successful")
-          return result
+          return {
+            ...result,
+            filePath: "",
+            fileUrl: ""
+          } as unknown as ComprehensiveCandidateData
         } else {
           console.log("⚠️ Gemini parsing failed validation, trying basic parsing...")
         }
@@ -71,7 +83,11 @@ export async function parseResume(file: any): Promise<ComprehensiveCandidateData
     
     if (isValidParsedData(result)) {
       console.log("✅ Enhanced basic parsing successful")
-      return result
+      return {
+        ...result,
+        filePath: "",
+        fileUrl: ""
+      } as unknown as ComprehensiveCandidateData
     } else {
       console.log("❌ All parsing methods failed validation")
       throw new Error("Failed to extract valid candidate information from resume")
@@ -242,14 +258,17 @@ ${limitedText}
 
 Return ONLY the JSON object:`
 
-    // Try different Gemini models with fallback
-    const models = ["gemini-2.0-flash", "gemini-2.0-pro", "gemini-pro-vision"]
+    // Try different Gemini models with fallback (prioritize 2.0-flash which is available)
+    const models = [process.env.GEMINI_MODEL || "gemini-2.0-flash", "gemini-2.5-flash"]
     let lastError = null
 
     for (const modelName of models) {
       try {
         console.log(`🔄 Trying Gemini model: ${modelName}`)
-        const model = genAI.getGenerativeModel({ model: modelName })
+        // Remove responseMimeType to prevent 400 Bad Request on some API versions
+        const model = genAI.getGenerativeModel({ 
+          model: modelName
+        })
         
         const result = await model.generateContent(prompt)
         const content = result.response.text()
@@ -927,16 +946,11 @@ function extractEducationSection(text: string) {
     }
   }
         
-  // Add to education array if we have meaningful data
-  if (degree && (university || year)) {
-    education.push({
-      degree: degree,
-      specialization: specialization,
-      institution: university || "Not specified",
-      year: year || "Not specified",
-      percentage: percentage || "Not specified"
-    })
-  }
+  let degree = ""
+  let university = ""
+  let year = ""
+  let specialization = ""
+  let percentage = ""
 
   // If no education section found, try to find education info scattered in text
   if (education.length === 0) {

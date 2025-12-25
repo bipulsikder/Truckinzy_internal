@@ -2,6 +2,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai"
 import { SupabaseCandidateService } from "./supabase-candidates"
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "")
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash"
 
 export interface SearchRequirement {
   role?: string;
@@ -16,6 +17,7 @@ export interface SearchRequirement {
   certifications?: string[];
   industry?: string;
   specificRequirements?: string[];
+  impliedResponsibilities?: string[];
 }
 
 export async function parseSearchRequirement(naturalLanguageQuery: string): Promise<SearchRequirement> {
@@ -28,9 +30,13 @@ export async function parseSearchRequirement(naturalLanguageQuery: string): Prom
   }
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" })
+    const model = genAI.getGenerativeModel({ 
+      model: DEFAULT_GEMINI_MODEL
+    })
     
-    const prompt = `You are an expert HR recruiter with deep knowledge of logistics and transportation industry. Parse this job requirement and extract structured information with semantic understanding:
+    const prompt = `You are an expert HR recruiter with deep knowledge of logistics and transportation industry. Parse this job requirement and extract structured information with semantic understanding.
+    
+    CRITICAL INSTRUCTION: Analyze the job role deeply to understand what this person actually DOES. Generate a list of "impliedResponsibilities" that are standard for this role in logistics, even if not explicitly mentioned.
 
 "${naturalLanguageQuery}"
 
@@ -47,11 +53,12 @@ Extract and return ONLY a JSON object with this exact structure:
   "education": "Education requirement",
   "certifications": ["Required certifications"],
   "industry": "Industry type (logistics, transportation, warehousing, supply chain)",
-  "specificRequirements": ["Any other specific requirements including salary info"]
+  "specificRequirements": ["Any other specific requirements including salary info"],
+  "impliedResponsibilities": ["Array of 5-7 specific daily tasks, KPIs, and responsibilities for this role in logistics (e.g., for 'Ops Exec': 'driver coordination', 'route planning', 'POD collection')"]
 }
 
 Advanced Semantic Parsing Rules:
-- "Warehouse Manager" → role: "Warehouse Manager", skills: ["warehouse management", "inventory control"]
+- "Warehouse Manager" → role: "Warehouse Manager", skills: ["warehouse management", "inventory control"], impliedResponsibilities: ["inventory audit", "staff supervision", "safety compliance", "inward/outward management"]
 - "SAP software" → skills: ["SAP"], specificRequirements: ["SAP proficiency"]
 - "LIFO and FEFO" → skills: ["inventory management", "LIFO", "FEFO"]
 - "Minimum 3 years" → experience: {min: 3}
@@ -78,6 +85,7 @@ Semantic Understanding:
 - Extract location information accurately including area names
 - Parse experience requirements (minimum, maximum, range)
 - Identify soft skills and leadership requirements
+- GENERATE implied responsibilities based on the role to help match candidates who mention these tasks in their resume/summary.
 
 Return ONLY the JSON object, no additional text.`
 
@@ -95,8 +103,14 @@ Return ONLY the JSON object, no additional text.`
       console.log("❌ Failed to parse Gemini response, using fallback")
       return extractBasicRequirements(naturalLanguageQuery)
     }
-  } catch (error) {
-    console.error("❌ Gemini parsing failed:", error)
+  } catch (error: any) {
+    const errorMessage = error?.message || String(error)
+    console.error("❌ Gemini parsing failed:", errorMessage)
+    
+    if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+      console.error("⚠️ Model not found. Check GEMINI_MODEL env var or API key permissions.")
+    }
+
     console.log("🔄 Falling back to basic requirement extraction")
     return extractBasicRequirements(naturalLanguageQuery)
   }
@@ -147,7 +161,10 @@ function extractBasicRequirements(query: string): SearchRequirement {
     'supply chain manager', 'transport manager', 'operations manager', 'delivery manager',
     'fleet supervisor', 'logistics executive', 'warehouse executive', 'transport coordinator',
     'inventory manager', 'store manager', 'godown manager', 'warehouse incharge', 
-    'logistics manager', 'supply chain executive', 'procurement manager'
+    'logistics manager', 'supply chain executive', 'procurement manager',
+    'transport executive', 'transport supervisor', 'fleet executive', 'operations executive',
+    // Singular/Plural variations
+    'operation executive', 'operation manager', 'logistic executive', 'logistic manager'
   ]
   
   for (const role of roleKeywords) {
@@ -250,9 +267,26 @@ export async function intelligentCandidateSearch(
     if (requirements.role) {
       const roleMatch = calculateRoleMatch(requirements.role, candidate)
       console.log(`🎯 Role match score: ${roleMatch} (${requirements.role} vs ${candidate.currentRole})`)
-      if (roleMatch > 0.2) {
-        score += roleMatch * 30
+      
+      // STRICT PREFERENCE: High weight for role match, penalty for mismatch
+      if (roleMatch > 0.3) { // Slightly higher threshold
+        score += roleMatch * 45 // High weight for role match
         matchingCriteria.push(`Role: ${candidate.currentRole} (${Math.round(roleMatch * 100)}%)`)
+      } else {
+        // If role doesn't match, apply penalty but allow recovery via deep responsibility match
+        // This ensures "must be in profile" preference while allowing some semantic flexibility
+        score -= 20 
+      }
+    }
+
+    // Implied Responsibilities Matching (Deep Semantic Understanding)
+    if (requirements.impliedResponsibilities && requirements.impliedResponsibilities.length > 0) {
+      const respScore = calculateResponsibilityMatch(requirements.impliedResponsibilities, candidate)
+      console.log(`📋 Responsibility match score: ${respScore}`)
+      
+      if (respScore > 0.1) {
+        score += respScore * 30 // Significant weight for deep understanding
+        matchingCriteria.push(`Responsibility Match: ${Math.round(respScore * 100)}%`)
       }
     }
 
@@ -260,7 +294,7 @@ export async function intelligentCandidateSearch(
     if (requirements.experience) {
       const expScore = calculateExperienceScore(requirements.experience, candidate.totalExperience)
       console.log(`⏱️ Experience score: ${expScore} (${JSON.stringify(requirements.experience)} vs ${candidate.totalExperience})`)
-      score += expScore * 25
+      score += expScore * 20 // Adjusted weight
       if (expScore > 0.2) {
         matchingCriteria.push(`Experience: ${candidate.totalExperience} (${Math.round(expScore * 100)}%)`)
       }
@@ -280,7 +314,7 @@ export async function intelligentCandidateSearch(
     if (requirements.skills && requirements.skills.length > 0) {
       const skillsScore = calculateSkillsScore(requirements.skills, candidate)
       console.log(`🛠️ Skills score: ${skillsScore} (${requirements.skills.join(', ')} vs ${(candidate.technicalSkills || []).join(', ')})`)
-      score += skillsScore * 20
+      score += skillsScore * 15 // Adjusted weight
       if (skillsScore > 0.1) {
         matchingCriteria.push(`Skills match: ${Math.round(skillsScore * 100)}%`)
       }
@@ -290,7 +324,7 @@ export async function intelligentCandidateSearch(
     if (requirements.education) {
       const eduScore = calculateEducationScore(requirements.education, candidate)
       console.log(`🎓 Education score: ${eduScore} (${requirements.education} vs ${candidate.highestQualification})`)
-      score += eduScore * 10
+      score += eduScore * 5 // Adjusted weight
       if (eduScore > 0.2) {
         matchingCriteria.push(`Education: ${candidate.highestQualification} (${Math.round(eduScore * 100)}%)`)
       }
@@ -322,8 +356,15 @@ function calculateRoleMatch(requiredRole: string, candidate: any): number {
   
   if (!candidateRole) return 0
 
-  // Exact match
-  if (candidateRole.includes(required) || required.includes(candidateRole)) return 1
+  // Normalize helper to handle singular/plural variations (e.g. "operations" vs "operation")
+  const normalize = (str: string) => str.replace(/s\b/g, '').replace(/\s+/g, ' ').trim()
+  
+  const normCandidate = normalize(candidateRole)
+  const normRequired = normalize(required)
+
+  // Exact match (including normalized)
+  if (candidateRole.includes(required) || required.includes(candidateRole) || 
+      normCandidate.includes(normRequired) || normRequired.includes(normCandidate)) return 1
 
   // Comprehensive role synonyms mapping with semantic understanding
   const roleSynonyms: { [key: string]: string[] } = {
@@ -333,15 +374,19 @@ function calculateRoleMatch(requiredRole: string, candidate: any): number {
     'warehouse manager': ['warehouse executive', 'store manager', 'inventory manager', 'warehouse supervisor', 'store incharge', 'warehouse incharge', 'godown manager'],
     'supply chain manager': ['supply chain executive', 'procurement manager', 'operations manager', 'logistics manager', 'scm manager'],
     'transport manager': ['transportation manager', 'fleet manager', 'logistics manager', 'dispatch manager', 'transport operations manager'],
-    'operations manager': ['operations executive', 'operations head', 'operations supervisor', 'fleet manager', 'logistics manager', 'operations incharge'],
+    'transport executive': ['transport manager', 'logistics executive', 'fleet executive', 'transport coordinator', 'operations executive', 'operation executive'],
+    'operations manager': ['operations executive', 'operations head', 'operations supervisor', 'fleet manager', 'logistics manager', 'operations incharge', 'operation manager'],
     'warehouse executive': ['warehouse manager', 'store executive', 'inventory executive', 'warehouse supervisor', 'store keeper', 'godown executive'],
     'inventory manager': ['inventory executive', 'stock manager', 'warehouse manager', 'store manager', 'inventory controller'],
-    'logistics manager': ['logistics executive', 'logistics coordinator', 'logistics head', 'logistics operations manager', 'supply chain manager']
+    'logistics manager': ['logistics executive', 'logistics coordinator', 'logistics head', 'logistics operations manager', 'supply chain manager'],
+    'operations executive': ['operations manager', 'operation executive', 'operations officer', 'operations coordinator'],
+    'operation executive': ['operations executive', 'operations manager', 'operations officer', 'operations coordinator']
   }
 
-  const synonyms = roleSynonyms[required] || []
+  // Check synonyms against both original and normalized requirement
+  const synonyms = roleSynonyms[required] || roleSynonyms[normRequired] || []
   for (const synonym of synonyms) {
-    if (candidateRole.includes(synonym)) return 0.8
+    if (candidateRole.includes(synonym) || normalize(synonym).includes(normCandidate)) return 0.8
   }
 
   // Check if candidate has relevant skills for the role
@@ -357,7 +402,8 @@ function calculateRoleMatch(requiredRole: string, candidate: any): number {
     'logistics coordinator': ['logistics', 'supply chain', 'coordination', 'planning', 'inventory', 'transportation'],
     'warehouse manager': ['warehouse', 'inventory', 'store', 'logistics', 'supply chain', 'operations'],
     'supply chain manager': ['supply chain', 'procurement', 'logistics', 'inventory', 'operations', 'vendor management'],
-    'transport manager': ['transportation', 'fleet', 'logistics', 'route', 'dispatch', 'vehicle management']
+    'transport manager': ['transportation', 'fleet', 'logistics', 'route', 'dispatch', 'vehicle management'],
+    'transport executive': ['transportation', 'logistics', 'fleet', 'coordination', 'operations', 'vehicle']
   }
 
   const requiredSkills = roleSkillMap[required] || []
@@ -365,7 +411,7 @@ function calculateRoleMatch(requiredRole: string, candidate: any): number {
     requiredSkills.some(reqSkill => skill.includes(reqSkill))
   )
 
-  return skillMatches.length > 0 ? 0.6 : 0.2
+  return skillMatches.length > 0 ? 0.6 : 0.1 // Lowered floor for non-matching roles
 }
 
 function calculateExperienceScore(requiredExp: any, candidateExp: string): number {
@@ -439,6 +485,52 @@ function calculateLocationScore(requiredLocation: string, candidateLocation: str
   }
   
   return 0.1
+}
+
+function calculateResponsibilityMatch(responsibilities: string[], candidate: any): number {
+  // Aggregate all relevant text from the candidate profile
+  const textToSearch = [
+    candidate.resumeText || '',
+    candidate.summary || '',
+    candidate.currentRole || '',
+    candidate.keyAchievements ? candidate.keyAchievements.join(' ') : '',
+    ...(candidate.workExperience || []).map((w: any) => `${w.role} ${w.description}`),
+    ...(candidate.projects || []).map((p: any) => p.description)
+  ].join(' ').toLowerCase();
+
+  if (!textToSearch.trim()) return 0;
+
+  let matchCount = 0;
+  let totalWeight = 0;
+
+  for (const resp of responsibilities) {
+    const phrase = resp.toLowerCase();
+    
+    // Exact phrase match gets high score
+    if (textToSearch.includes(phrase)) {
+      matchCount += 1.5;
+    } else {
+      // Keyword matching: split responsibility into keywords
+      const keywords = phrase.split(/\s+/).filter(w => w.length > 3 && !['with', 'that', 'this', 'from', 'into', 'manage', 'handle'].includes(w));
+      
+      if (keywords.length > 0) {
+        const matchedKeywords = keywords.filter(k => textToSearch.includes(k));
+        const matchRatio = matchedKeywords.length / keywords.length;
+        
+        // If more than 60% of significant keywords match, count it
+        if (matchRatio >= 0.6) {
+          matchCount += matchRatio;
+        }
+      }
+    }
+    totalWeight += 1;
+  }
+
+  // Normalize score between 0 and 1
+  // We don't expect 100% match of all AI-generated responsibilities, so we scale it
+  const finalScore = Math.min(1, matchCount / Math.max(1, totalWeight * 0.7));
+  
+  return finalScore;
 }
 
 function calculateSkillsScore(requiredSkills: string[], candidate: any): number {

@@ -51,6 +51,7 @@ import {
   Zap,
   CheckCircle,
   Info,
+  Trash,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
@@ -133,47 +134,79 @@ export function CandidatePreviewDialog({
   const [isUpdating, setIsUpdating] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string>("") // State for the preview URL
   const { toast } = useToast()
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [fetchedCandidate, setFetchedCandidate] = useState<CandidateData | null>(null)
 
   // Initialize state when candidate changes
   useEffect(() => {
     if (candidate) {
       setNotes(candidate.notes || "")
       setRating(candidate.rating || undefined)
+      setFetchedCandidate(null) // Reset fetched candidate
       
+      // Fetch fresh candidate data to ensure we have the latest file URL and details
+      const fetchFreshCandidate = async () => {
+        try {
+          const id = candidate._id || candidate.id
+          if (!id) return
+          
+          const res = await fetch(`/api/candidates/${id}`)
+          if (res.ok) {
+            const data = await res.json()
+            if (!data.error) {
+              console.log("Fetched fresh candidate data:", data.name)
+              setFetchedCandidate(data)
+            }
+          }
+        } catch (error) {
+          console.error("Error fetching fresh candidate data:", error)
+        }
+      }
+      
+      fetchFreshCandidate()
+    }
+  }, [candidate, isOpen])
+
+  useEffect(() => {
+    const activeCandidate = fetchedCandidate || candidate
+    if (activeCandidate) {
       // Generate preview URL for DOCX files
       const generatePreviewUrl = async () => {
-        if (candidate.fileUrl && candidate.fileName) {
-          if (isDocxFile(candidate.fileUrl, candidate.fileName)) {
+        if (activeCandidate.fileUrl && activeCandidate.fileName) {
+          if (isDocxFile(activeCandidate.fileUrl, activeCandidate.fileName)) {
             try {
-              const url = await createPreviewUrl(candidate.fileUrl, candidate.fileName);
+              const url = await createPreviewUrl(activeCandidate.fileUrl, activeCandidate.fileName);
               setPreviewUrl(url);
             } catch (error) {
               console.error('Error generating preview URL:', error);
-              setPreviewUrl(candidate.fileUrl); // Fallback to original URL
+              setPreviewUrl(activeCandidate.fileUrl); // Fallback to original URL
             }
           } else {
-            setPreviewUrl(candidate.fileUrl); // Use original URL for non-DOCX files
+            setPreviewUrl(activeCandidate.fileUrl); // Use original URL for non-DOCX files
           }
         }
       };
       
       generatePreviewUrl();
     }
-  }, [candidate])
+  }, [candidate, fetchedCandidate])
 
   if (!candidate) return null
 
   // Ensure all array properties have default values to prevent map errors
+  // Use fetchedCandidate if available, otherwise use candidate prop
+  const sourceCandidate = fetchedCandidate || candidate
   const safeCandidate = {
-    ...candidate,
-    technicalSkills: Array.isArray(candidate.technicalSkills) ? candidate.technicalSkills : [],
-    softSkills: Array.isArray(candidate.softSkills) ? candidate.softSkills : [],
-    certifications: Array.isArray(candidate.certifications) ? candidate.certifications : [],
-    keyAchievements: Array.isArray(candidate.keyAchievements) ? candidate.keyAchievements : [],
-    workExperience: Array.isArray(candidate.workExperience) ? candidate.workExperience : [],
-    education: Array.isArray(candidate.education) ? candidate.education : [],
-    tags: Array.isArray(candidate.tags) ? candidate.tags : [],
-    matchingKeywords: Array.isArray(candidate.matchingKeywords) ? candidate.matchingKeywords : [],
+    ...sourceCandidate,
+    technicalSkills: Array.isArray(sourceCandidate.technicalSkills) ? sourceCandidate.technicalSkills : [],
+    softSkills: Array.isArray(sourceCandidate.softSkills) ? sourceCandidate.softSkills : [],
+    certifications: Array.isArray(sourceCandidate.certifications) ? sourceCandidate.certifications : [],
+    keyAchievements: Array.isArray(sourceCandidate.keyAchievements) ? sourceCandidate.keyAchievements : [],
+    workExperience: Array.isArray(sourceCandidate.workExperience) ? sourceCandidate.workExperience : [],
+    education: Array.isArray(sourceCandidate.education) ? sourceCandidate.education : [],
+    tags: Array.isArray(sourceCandidate.tags) ? sourceCandidate.tags : [],
+    matchingKeywords: Array.isArray(sourceCandidate.matchingKeywords) ? sourceCandidate.matchingKeywords : [],
   }
 
   const candidateId = safeCandidate._id || safeCandidate.id || ""
@@ -350,6 +383,23 @@ export function CandidatePreviewDialog({
     if (score >= 0.8) return "High Match"
     if (score >= 0.6) return "Medium Match"
     return "Low Match"
+  }
+
+  const handleDeleteCandidate = async () => {
+    setIsDeleting(true)
+    try {
+      const resp = await fetch(`/api/candidates/${candidateId}`, { method: "DELETE" })
+      if (!resp.ok) {
+        throw new Error("Failed to delete candidate")
+      }
+      toast({ title: "Candidate Deleted", description: `${safeCandidate.name} has been deleted` })
+      setShowDeleteConfirm(false)
+      onClose()
+    } catch (error) {
+      toast({ title: "Error", description: "Failed to delete candidate", variant: "destructive" })
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   const formatExperience = (experience: any): string => {
@@ -1388,6 +1438,14 @@ export function CandidatePreviewDialog({
                           </a>
                         </Button>
                       )}
+                      <Button
+                        variant="outline"
+                        className="h-12 hover:bg-red-50 text-red-600"
+                        onClick={() => setShowDeleteConfirm(true)}
+                      >
+                        <Trash className="h-5 w-5 mr-2" />
+                        Delete
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -1434,6 +1492,37 @@ export function CandidatePreviewDialog({
               ) : (
                 "Confirm"
               )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+      </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              {isDeleting && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600"></div>}
+              {isDeleting ? "Deleting..." : "Confirm Delete"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {isDeleting ? (
+                <span className="flex items-center gap-2 text-red-600">
+                  <span className="animate-spin rounded-full h-3 w-3 border-b-2 border-red-600"></span>
+                  Deleting <strong>{safeCandidate.name}</strong>...
+                </span>
+              ) : (
+                <>Are you sure you want to delete <strong>{safeCandidate.name}</strong>? This action cannot be undone.</>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>{isDeleting ? "Please wait..." : "Cancel"}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteCandidate}
+              disabled={isDeleting}
+              className={isDeleting ? "opacity-50 cursor-not-allowed bg-red-600" : "bg-red-600 hover:bg-red-700"}
+            >
+              {isDeleting ? "Deleting..." : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
