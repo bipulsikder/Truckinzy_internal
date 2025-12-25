@@ -1,9 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   serverExternalPackages: ['pdf-parse', 'mammoth', 'jszip'],
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   typescript: {
     ignoreBuildErrors: true,
   },
@@ -18,6 +15,7 @@ const nextConfig = {
     config.resolve.alias.encoding = false
     return config
   },
+  turbopack: {},
 }
 
 export default nextConfig
